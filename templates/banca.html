@@ -1,0 +1,525 @@
+{% extends "base.html" %}
+
+{% block title %}Banca - Sistema de Previsão de Meta{% endblock %}
+
+{% block head %}
+    <!-- Inclusão do Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+{% endblock %}
+
+{% block content %}
+    <!-- Dados Gerais -->
+    <h2>Dados Gerais</h2>
+    <div id="dados-gerais">
+        <!-- Dados serão carregados via AJAX -->
+    </div>
+
+    <!-- Formulário para adicionar Saldo -->
+    <h2>Adicionar Saldo</h2>
+    <form id="add-saldo-form">
+        <label for="saldo">Saldo:</label>
+        <input type="text" id="saldo" name="saldo" class="formatted-input" required>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit">Adicionar Saldo</button>
+    </form>
+
+    <!-- Formulário para adicionar Transação -->
+    <h2>Adicionar Transação</h2>
+    <form id="add-transacao-form">
+        <label for="tipo">Tipo:</label>
+        <select id="tipo" name="tipo" required>
+            <option value="deposito">Depósito</option>
+            <option value="saque">Saque</option>
+        </select>
+        <label for="valor">Valor:</label>
+        <input type="text" id="valor" name="valor" class="formatted-input" required>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit">Adicionar Transação</button>
+    </form>
+
+    <!-- Formulário para atualizar Meta -->
+    <h2>Atualizar Meta</h2>
+    <form id="update-meta-form">
+        <label for="nova_meta">Nova Meta:</label>
+        <input type="text" id="nova_meta" name="nova_meta" class="formatted-input" required>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit">Atualizar Meta</button>
+    </form>
+
+    <!-- Botão para zerar banca -->
+    <button id="zerar-banca-button" style="background: #dc3545;">Zerar Banca</button>
+
+    <!-- Tabela de Saldos -->
+    <h2>Saldos</h2>
+    <table id="saldos-table">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Data</th>
+                <th>Valor</th>
+                <th>Ações</th>
+            </tr>
+        </thead>
+        <tbody>
+            <!-- Saldos serão carregados via AJAX -->
+        </tbody>
+    </table>
+
+    <!-- Tabela de Transações -->
+    <h2>Transações</h2>
+    <table id="transacoes-table">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Tipo</th>
+                <th>Valor</th>
+                <th>Data</th>
+                <th>Ações</th>
+            </tr>
+        </thead>
+        <tbody>
+            <!-- Transações serão carregadas via AJAX -->
+        </tbody>
+    </table>
+
+    <!-- Gráfico de Evolução -->
+    <h2>Evolução da Banca</h2>
+    <canvas id="evolucao-chart" width="400" height="200"></canvas>
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        // Função para formatar números no padrão brasileiro (1.200,50)
+        function formatNumberBR(value) {
+            // Remove tudo que não é dígito
+            let num = value.replace(/\D/g, '');
+
+            if (num.length === 0) return '';
+
+            // Adiciona a vírgula antes dos últimos dois dígitos
+            if (num.length === 1) {
+                num = '0,0' + num;
+            } else if (num.length === 2) {
+                num = '0,' + num;
+            } else {
+                num = num.slice(0, -2) + ',' + num.slice(-2);
+            }
+
+            // Adiciona pontos como separador de milhares
+            num = num.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+
+            return num;
+        }
+
+        // Função para remover formatação e retornar apenas números
+        function unformatNumberBR(value) {
+            return value.replace(/\./g, '').replace(',', '.');
+        }
+
+        // Aplicar formatação enquanto o usuário digita
+        $(document).ready(function(){
+            $('.formatted-input').on('input', function(){
+                let cursorPosition = this.selectionStart;
+                let originalLength = this.value.length;
+
+                let formatted = formatNumberBR(this.value);
+                this.value = formatted;
+
+                let newLength = formatted.length;
+                cursorPosition += newLength - originalLength;
+                this.setSelectionRange(cursorPosition, cursorPosition);
+            });
+
+            // Função para carregar Dados Gerais
+            function carregarDadosGerais(){
+                $.ajax({
+                    url: '/get_dados',
+                    method: 'GET',
+                    success: function(response){
+                        let dadosHTML = `
+                            <p><strong>Total da Banca:</strong> ${response.total_banca}</p>
+                            <p><strong>Depósitos:</strong> ${response.depositos}</p>
+                            <p><strong>Saques:</strong> ${response.saques}</p>
+                            <p><strong>Lucro:</strong> ${response.lucro}</p>
+                            <p><strong>Meta:</strong> ${response.meta}</p>
+                        `;
+                        $('#dados-gerais').html(dadosHTML);
+                    },
+                    error: function(xhr){
+                        alert(xhr.responseJSON.message);
+                    }
+                });
+            }
+
+            // Função para carregar Saldos
+            function carregarSaldos(){
+                $.ajax({
+                    url: '/get_saldos',
+                    method: 'GET',
+                    success: function(saldos){
+                        let tbody = '';
+                        saldos.forEach(function(saldo){
+                            tbody += `
+                                <tr>
+                                    <td>${saldo.id}</td>
+                                    <td>${saldo.data}</td>
+                                    <td>${saldo.valor.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+                                    <td>
+                                        <button class="update-saldo-button" data-id="${saldo.id}" data-valor="${saldo.valor}">Editar</button>
+                                        <button class="delete-saldo-button" data-id="${saldo.id}">Excluir</button>
+                                    </td>
+                                </tr>
+                            `;
+                        });
+                        $('#saldos-table tbody').html(tbody);
+                    },
+                    error: function(xhr){
+                        alert(xhr.responseJSON.message);
+                    }
+                });
+            }
+
+            // Função para carregar Transações
+            function carregarTransacoes(){
+                $.ajax({
+                    url: '/get_transacoes',
+                    method: 'GET',
+                    success: function(transacoes){
+                        let tbody = '';
+                        transacoes.forEach(function(transacao){
+                            tbody += `
+                                <tr>
+                                    <td>${transacao.id}</td>
+                                    <td>${transacao.tipo}</td>
+                                    <td>${transacao.valor.toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+                                    <td>${transacao.data}</td>
+                                    <td>
+                                        <button class="update-transacao-button" data-id="${transacao.id}" data-valor="${transacao.valor}" data-tipo="${transacao.tipo}">Editar</button>
+                                        <button class="delete-transacao-button" data-id="${transacao.id}">Excluir</button>
+                                    </td>
+                                </tr>
+                            `;
+                        });
+                        $('#transacoes-table tbody').html(tbody);
+                    },
+                    error: function(xhr){
+                        alert(xhr.responseJSON.message);
+                    }
+                });
+            }
+
+            // Função para carregar Gráfico de Evolução
+            function carregarGraficoEvolucao(){
+                $.ajax({
+                    url: '/get_dados',
+                    method: 'GET',
+                    success: function(response){
+                        // Aqui assumimos que /get_dados retorna informações suficientes para o gráfico.
+                        // Se necessário, ajuste a rota para retornar dados apropriados.
+                        // Exemplo simplificado:
+                        let labels = [];
+                        let data = [];
+
+                        // Supondo que a evolução está disponível
+                        // Você pode adaptar conforme sua implementação
+                        // Aqui, utilizo os saldos para o gráfico
+                        $.ajax({
+                            url: '/get_saldos',
+                            method: 'GET',
+                            success: function(saldos){
+                                saldos.forEach(function(saldo){
+                                    labels.push(saldo.data);
+                                    data.push(parseFloat(saldo.valor));
+                                });
+
+                                var ctx = document.getElementById('evolucao-chart').getContext('2d');
+                                var evolucaoChart = new Chart(ctx, {
+                                    type: 'line',
+                                    data: {
+                                        labels: labels,
+                                        datasets: [{
+                                            label: 'Evolução da Banca',
+                                            data: data,
+                                            backgroundColor: 'rgba(40, 167, 69, 0.2)',
+                                            borderColor: 'rgba(40, 167, 69, 1)',
+                                            borderWidth: 1,
+                                            fill: true
+                                        }]
+                                    },
+                                    options: {
+                                        scales: {
+                                            y: {
+                                                beginAtZero: true
+                                            }
+                                        }
+                                    }
+                                });
+                            },
+                            error: function(xhr){
+                                console.error("Erro ao carregar saldos para o gráfico:", xhr.responseJSON.message);
+                            }
+                        });
+                    },
+                    error: function(xhr){
+                        console.error("Erro ao carregar dados gerais para o gráfico:", xhr.responseJSON.message);
+                    }
+                });
+            }
+
+            // Carregar dados ao iniciar
+            carregarDadosGerais();
+            carregarSaldos();
+            carregarTransacoes();
+            carregarGraficoEvolucao();
+
+            // Formulário para adicionar Saldo
+            $('#add-saldo-form').on('submit', function(e){
+                e.preventDefault();
+                let saldo = unformatNumberBR($('#saldo').val());
+
+                $.ajax({
+                    url: '/add_saldo',
+                    method: 'POST',
+                    data: {
+                        saldo: saldo,
+                        csrf_token: $('input[name="csrf_token"]').val()
+                    },
+                    success: function(response){
+                        alert(response.message);
+                        carregarDadosGerais();
+                        carregarSaldos();
+                        carregarTransacoes();
+                        carregarGraficoEvolucao();
+                        $('#saldo').val('');
+                    },
+                    error: function(xhr){
+                        if(xhr.responseJSON && xhr.responseJSON.message){
+                            alert(xhr.responseJSON.message);
+                        } else {
+                            alert("Erro ao adicionar saldo.");
+                        }
+                    }
+                });
+            });
+
+            // Formulário para adicionar Transação
+            $('#add-transacao-form').on('submit', function(e){
+                e.preventDefault();
+                let tipo = $('#tipo').val();
+                let valor = unformatNumberBR($('#valor').val());
+
+                $.ajax({
+                    url: '/add_transacao',
+                    method: 'POST',
+                    data: {
+                        tipo: tipo,
+                        valor: valor,
+                        csrf_token: $('input[name="csrf_token"]').val()
+                    },
+                    success: function(response){
+                        alert(response.message);
+                        carregarDadosGerais();
+                        carregarSaldos();
+                        carregarTransacoes();
+                        carregarGraficoEvolucao();
+                        $('#valor').val('');
+                    },
+                    error: function(xhr){
+                        if(xhr.responseJSON && xhr.responseJSON.message){
+                            alert(xhr.responseJSON.message);
+                        } else {
+                            alert("Erro ao adicionar transação.");
+                        }
+                    }
+                });
+            });
+
+            // Formulário para atualizar Meta
+            $('#update-meta-form').on('submit', function(e){
+                e.preventDefault();
+                let nova_meta = unformatNumberBR($('#nova_meta').val());
+
+                $.ajax({
+                    url: '/update_meta',
+                    method: 'POST',
+                    data: {
+                        nova_meta: nova_meta,
+                        csrf_token: $('input[name="csrf_token"]').val()
+                    },
+                    success: function(response){
+                        alert(response.message);
+                        carregarDadosGerais();
+                        $('#nova_meta').val('');
+                    },
+                    error: function(xhr){
+                        if(xhr.responseJSON && xhr.responseJSON.message){
+                            alert(xhr.responseJSON.message);
+                        } else {
+                            alert("Erro ao atualizar meta.");
+                        }
+                    }
+                });
+            });
+
+            // Botão para zerar banca
+            $('#zerar-banca-button').on('click', function(){
+                if(confirm("Tem certeza que deseja zerar a banca? Esta ação não pode ser desfeita.")){
+                    $.ajax({
+                        url: '/delete_all_saldos',
+                        method: 'POST',
+                        data: {
+                            csrf_token: $('input[name="csrf_token"]').val()
+                        },
+                        success: function(response){
+                            alert(response.message);
+                            carregarDadosGerais();
+                            carregarSaldos();
+                            carregarTransacoes();
+                            carregarGraficoEvolucao();
+                        },
+                        error: function(xhr){
+                            if(xhr.responseJSON && xhr.responseJSON.message){
+                                alert(xhr.responseJSON.message);
+                            } else {
+                                alert("Erro ao zerar a banca.");
+                            }
+                        }
+                    });
+                }
+            });
+
+            // Delegação de eventos para botões de atualizar e deletar Saldo
+            $('#saldos-table').on('click', '.update-saldo-button', function(){
+                let saldo_id = $(this).data('id');
+                let saldo_valor = parseFloat($(this).data('valor')).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                let novo_valor = prompt("Digite o novo valor para o saldo:", saldo_valor);
+                if(novo_valor !== null){
+                    let valor_desformatado = unformatNumberBR(novo_valor);
+                    if(isNaN(valor_desformatado) || valor_desformatado <= 0){
+                        alert("Por favor, insira um valor válido.");
+                        return;
+                    }
+                    $.ajax({
+                        url: `/update_saldo/${saldo_id}`,
+                        method: 'POST',
+                        data: {
+                            novo_valor: valor_desformatado,
+                            csrf_token: '{{ csrf_token }}'
+                        },
+                        success: function(response){
+                            alert(response.message);
+                            carregarDadosGerais();
+                            carregarSaldos();
+                            carregarTransacoes();
+                            carregarGraficoEvolucao();
+                        },
+                        error: function(xhr){
+                            if(xhr.responseJSON && xhr.responseJSON.message){
+                                alert(xhr.responseJSON.message);
+                            } else {
+                                alert("Erro ao atualizar saldo.");
+                            }
+                        }
+                    });
+                }
+            });
+
+            $('#saldos-table').on('click', '.delete-saldo-button', function(){
+                let saldo_id = $(this).data('id');
+                if(confirm("Tem certeza que deseja excluir este saldo?")){
+                    $.ajax({
+                        url: `/delete_saldo/${saldo_id}`,
+                        method: 'DELETE',
+                        data: {
+                            csrf_token: '{{ csrf_token }}'
+                        },
+                        success: function(response){
+                            alert(response.message);
+                            carregarDadosGerais();
+                            carregarSaldos();
+                            carregarTransacoes();
+                            carregarGraficoEvolucao();
+                        },
+                        error: function(xhr){
+                            if(xhr.responseJSON && xhr.responseJSON.message){
+                                alert(xhr.responseJSON.message);
+                            } else {
+                                alert("Erro ao excluir saldo.");
+                            }
+                        }
+                    });
+                }
+            });
+
+            // Delegação de eventos para botões de atualizar e deletar Transação
+            $('#transacoes-table').on('click', '.update-transacao-button', function(){
+                let transacao_id = $(this).data('id');
+                let transacao_valor = parseFloat($(this).data('valor')).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                let transacao_tipo = $(this).data('tipo');
+                let novo_valor = prompt("Digite o novo valor para a transação:", transacao_valor);
+                if(novo_valor !== null){
+                    let valor_desformatado = unformatNumberBR(novo_valor);
+                    if(isNaN(valor_desformatado) || valor_desformatado <= 0){
+                        alert("Por favor, insira um valor válido.");
+                        return;
+                    }
+                    let novo_tipo = prompt("Digite o novo tipo para a transação (deposito/saque):", transacao_tipo);
+                    if(novo_tipo !== null && (novo_tipo === 'deposito' || novo_tipo === 'saque')){
+                        $.ajax({
+                            url: `/update_transacao/${transacao_id}`,
+                            method: 'POST',
+                            data: {
+                                novo_valor: valor_desformatado,
+                                novo_tipo: novo_tipo,
+                                csrf_token: '{{ csrf_token }}'
+                            },
+                            success: function(response){
+                                alert(response.message);
+                                carregarDadosGerais();
+                                carregarSaldos();
+                                carregarTransacoes();
+                                carregarGraficoEvolucao();
+                            },
+                            error: function(xhr){
+                                if(xhr.responseJSON && xhr.responseJSON.message){
+                                    alert(xhr.responseJSON.message);
+                                } else {
+                                    alert("Erro ao atualizar transação.");
+                                }
+                            }
+                        });
+                    } else if (novo_tipo !== null){
+                        alert("Tipo de transação inválido. Use 'deposito' ou 'saque'.");
+                    }
+                }
+            });
+
+            $('#transacoes-table').on('click', '.delete-transacao-button', function(){
+                let transacao_id = $(this).data('id');
+                if(confirm("Tem certeza que deseja excluir esta transação?")){
+                    $.ajax({
+                        url: `/delete_transacao/${transacao_id}`,
+                        method: 'DELETE',
+                        data: {
+                            csrf_token: '{{ csrf_token }}'
+                        },
+                        success: function(response){
+                            alert(response.message);
+                            carregarDadosGerais();
+                            carregarSaldos();
+                            carregarTransacoes();
+                            carregarGraficoEvolucao();
+                        },
+                        error: function(xhr){
+                            if(xhr.responseJSON && xhr.responseJSON.message){
+                                alert(xhr.responseJSON.message);
+                            } else {
+                                alert("Erro ao excluir transação.");
+                            }
+                        }
+                    });
+                }
+            });
+        });
+    </script>
+{% endblock %}

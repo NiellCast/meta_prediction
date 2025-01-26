@@ -1,0 +1,7 @@
+Flask>=2.3.2
+Flask-WTF>=1.1.1
+Flask-Bcrypt>=1.0.1
+Flask-SQLAlchemy>=3.0.3
+Flask-Talisman>=0.8.1
+Flask-Testing>=0.8.1
+pytest>=7.3.1

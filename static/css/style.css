@@ -1,0 +1,42 @@
+/* app/static/css/style.css */
+
+/* Estilização geral */
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+/* Estilização dos cards */
+.card {
+    border: none;
+    border-radius: 10px;
+}
+
+/* Estilização dos headers */
+header {
+    margin-bottom: 20px;
+}
+
+/* Estilização dos formulários */
+form label {
+    font-weight: 500;
+}
+
+form input, form select {
+    border-radius: 5px;
+}
+
+/* Responsividade */
+@media (max-width: 768px) {
+    .row.g-3.align-items-center {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .col-md-3, .col-md-2, .col-md-1 {
+        width: 100%;
+    }
+}
+
+/* Estilização dos botões */
+button.btn {
+    min-width: 100px;
+}

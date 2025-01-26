@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block title %}Login - Sistema de Previsão de Meta{% endblock %}
+
+{% block content %}
+    <h2>Login</h2>
+    <div id="login-message"></div>
+    <form id="login-form">
+        <label for="username">Username:</label>
+        <input type="text" id="username" name="username" required>
+
+        <label for="password">Password:</label>
+        <input type="password" id="password" name="password" required>
+
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit">Login</button>
+    </form>
+    <p style="text-align: center;">Não possui uma conta? <a href="/register">Registre-se aqui</a>.</p>
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        $(document).ready(function(){
+            $('#login-form').on('submit', function(e){
+                e.preventDefault();
+                let formData = $(this).serialize();
+
+                $.ajax({
+                    url: '/login',
+                    method: 'POST',
+                    data: formData,
+                    success: function(response){
+                        $('#login-message').html(`<p class="success">${response.message}</p>`);
+                        window.location.href = '/banca';
+                    },
+                    error: function(xhr){
+                        if(xhr.responseJSON && xhr.responseJSON.message){
+                            $('#login-message').html(`<p class="error">${xhr.responseJSON.message}</p>`);
+                        } else {
+                            $('#login-message').html(`<p class="error">Erro ao fazer login.</p>`);
+                        }
+                    }
+                });
+            });
+        });
+    </script>
+{% endblock %}

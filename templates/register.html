@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block title %}Registrar - Sistema de Previsão de Meta{% endblock %}
+
+{% block content %}
+    <h2>Registrar</h2>
+    <div id="register-message"></div>
+    <form id="register-form">
+        <label for="username">Username:</label>
+        <input type="text" id="username" name="username" required>
+
+        <label for="email">Email:</label>
+        <input type="email" id="email" name="email" required>
+
+        <label for="password">Password:</label>
+        <input type="password" id="password" name="password" required>
+
+        <label for="confirm_password">Confirm Password:</label>
+        <input type="password" id="confirm_password" name="confirm_password" required>
+
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit">Registrar</button>
+    </form>
+    <p style="text-align: center;">Já possui uma conta? <a href="/login">Faça login aqui</a>.</p>
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        $(document).ready(function(){
+            $('#register-form').on('submit', function(e){
+                e.preventDefault();
+                let formData = $(this).serialize();
+
+                $.ajax({
+                    url: '/register',
+                    method: 'POST',
+                    data: formData,
+                    success: function(response){
+                        $('#register-message').html(`<p class="success">${response.message}</p>`);
+                        window.location.href = '/banca';
+                    },
+                    error: function(xhr){
+                        if(xhr.responseJSON && xhr.responseJSON.message){
+                            $('#register-message').html(`<p class="error">${xhr.responseJSON.message}</p>`);
+                        } else {
+                            $('#register-message').html(`<p class="error">Erro ao registrar.</p>`);
+                        }
+                    }
+                });
+            });
+        });
+    </script>
+{% endblock %}
