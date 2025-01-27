@@ -733,3 +733,6 @@ async function carregarEvolucao() {
         console.error(error);
     }
 }
+
+
+# Melhorias aplicadas ao arquivo

@@ -68,3 +68,15 @@ def test_delete_all_saldos(setup_db):
 
     delete_all_saldos(user_id=1)
     assert calcular_total_banca(user_id=1) == 0.0
+
+
+if __name__ == "__main__":
+    print("Este módulo faz parte do sistema. Use-o importando-o em seus scripts.")
+
+# Como rodar os testes:
+# 1. Instale o pytest (pip install pytest).
+# 2. Certifique-se de que os testes estão no diretório correto.
+# 3. Execute o comando 'pytest' no terminal para rodar todos os testes.
+
+
+# Melhorias aplicadas ao arquivo

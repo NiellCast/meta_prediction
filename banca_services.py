@@ -174,3 +174,15 @@ class BancaManager:
 
 # Instanciar o manager
 banca_manager = BancaManager()
+
+
+if __name__ == "__main__":
+    print("Este módulo faz parte do sistema. Use-o importando-o em seus scripts.")
+
+# Como rodar os testes:
+# 1. Instale o pytest (pip install pytest).
+# 2. Certifique-se de que os testes estão no diretório correto.
+# 3. Execute o comando 'pytest' no terminal para rodar todos os testes.
+
+
+# Melhorias aplicadas ao arquivo

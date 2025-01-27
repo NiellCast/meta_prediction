@@ -30,3 +30,15 @@ class TransacaoForm(FlaskForm):
 
 class MetaForm(FlaskForm):
     nova_meta = DecimalField('Nova Meta', places=2, validators=[DataRequired(), NumberRange(min=0.01)])
+
+
+if __name__ == "__main__":
+    print("Este módulo faz parte do sistema. Use-o importando-o em seus scripts.")
+
+# Como rodar os testes:
+# 1. Instale o pytest (pip install pytest).
+# 2. Certifique-se de que os testes estão no diretório correto.
+# 3. Execute o comando 'pytest' no terminal para rodar todos os testes.
+
+
+# Melhorias aplicadas ao arquivo

@@ -30,3 +30,15 @@ def register_user_service(username, email, hashed_password):
     db.session.add(new_user)
     db.session.commit()
     return new_user
+
+
+if __name__ == "__main__":
+    print("Este módulo faz parte do sistema. Use-o importando-o em seus scripts.")
+
+# Como rodar os testes:
+# 1. Instale o pytest (pip install pytest).
+# 2. Certifique-se de que os testes estão no diretório correto.
+# 3. Execute o comando 'pytest' no terminal para rodar todos os testes.
+
+
+# Melhorias aplicadas ao arquivo

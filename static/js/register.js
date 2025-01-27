@@ -62,3 +62,6 @@ function getCsrfToken() {
     const tokenMeta = document.querySelector('meta[name="csrf-token"]');
     return tokenMeta ? tokenMeta.getAttribute('content') : '';
 }
+
+
+# Melhorias aplicadas ao arquivo

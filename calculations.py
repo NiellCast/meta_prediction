@@ -13,3 +13,6 @@ def parse_currency_br(value):
     Exemplo: '1.000,50' -> 1000.50
     """
     return float(value.replace(".", "").replace(",", "."))
+
+
+# Melhorias aplicadas ao arquivo

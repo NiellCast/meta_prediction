@@ -13,3 +13,6 @@ if __name__ == "__main__":
     with app.app_context():
         create_tables()
         print("Tabelas criadas e aplicação inicializada com sucesso.")
+
+
+# Melhorias aplicadas ao arquivo

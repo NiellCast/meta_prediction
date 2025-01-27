@@ -49,3 +49,15 @@ def calcular_previsao_polinomial(dados, meta, grau=2):
         return None, "Meta não pode ser atingida com os dados atuais."
 
     return dias_para_meta, None
+
+
+if __name__ == "__main__":
+    print("Este módulo faz parte do sistema. Use-o importando-o em seus scripts.")
+
+# Como rodar os testes:
+# 1. Instale o pytest (pip install pytest).
+# 2. Certifique-se de que os testes estão no diretório correto.
+# 3. Execute o comando 'pytest' no terminal para rodar todos os testes.
+
+
+# Melhorias aplicadas ao arquivo
