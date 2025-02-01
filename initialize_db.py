@@ -1,5 +1,3 @@
-# initialize_db.py
-
 from main import app
 from models import db
 
@@ -7,12 +5,9 @@ def create_tables():
     """
     Cria todas as tabelas no banco de dados.
     """
-    db.create_all()
+    with app.app_context():
+        db.create_all()
+        print("Tabelas criadas com sucesso.")
 
 if __name__ == "__main__":
-    with app.app_context():
-        create_tables()
-        print("Tabelas criadas e aplicação inicializada com sucesso.")
-
-
-# Melhorias aplicadas ao arquivo
+    create_tables()

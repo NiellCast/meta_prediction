@@ -1,9 +1,6 @@
-# models.py
-
 from flask_sqlalchemy import SQLAlchemy
 
 db = SQLAlchemy()
-
 
 class User(db.Model):
     __tablename__ = 'user'
@@ -11,12 +8,13 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(25), unique=True, nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
-    hashed_password = db.Column(db.String(128), nullable=False)  # Armazena o hash da senha
-    role = db.Column(db.String(20), nullable=False, default='user')  # Adicionado campo de role
+    hashed_password = db.Column(db.String(128), nullable=False)
+    role = db.Column(db.String(20), nullable=False, default='user')  # Campo para papel do usuário
 
-    saldos = db.relationship('Saldo', backref='user', lazy=True)
-    transacoes = db.relationship('Transacao', backref='user', lazy=True)
-    meta = db.relationship('Meta', backref='user', uselist=False)
+    # Relacionamentos
+    saldos = db.relationship('Saldo', backref='user', lazy=True, cascade="all, delete-orphan")
+    transacoes = db.relationship('Transacao', backref='user', lazy=True, cascade="all, delete-orphan")
+    meta = db.relationship('Meta', backref='user', uselist=False, cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<User {self.username}>"
@@ -31,7 +29,7 @@ class Saldo(db.Model):
     valor = db.Column(db.Numeric(10, 2), nullable=False)
 
     def __repr__(self):
-        return f"<Saldo {self.valor} em {self.data}>"
+        return f"<Saldo R${self.valor} em {self.data}>"
 
 
 class Transacao(db.Model):
@@ -44,7 +42,7 @@ class Transacao(db.Model):
     data = db.Column(db.Date, nullable=False)
 
     def __repr__(self):
-        return f"<Transacao {self.tipo} de {self.valor} em {self.data}>"
+        return f"<Transacao {self.tipo.capitalize()} de R${self.valor} em {self.data}>"
 
 
 class Meta(db.Model):
@@ -55,16 +53,4 @@ class Meta(db.Model):
     valor_meta = db.Column(db.Numeric(10, 2), nullable=False)
 
     def __repr__(self):
-        return f"<Meta {self.valor_meta} para User ID {self.user_id}>"
-
-
-if __name__ == "__main__":
-    print("Este módulo faz parte do sistema. Use-o importando-o em seus scripts.")
-
-# Como rodar os testes:
-# 1. Instale o pytest (pip install pytest).
-# 2. Certifique-se de que os testes estão no diretório correto.
-# 3. Execute o comando 'pytest' no terminal para rodar todos os testes.
-
-
-# Melhorias aplicadas ao arquivo
+        return f"<Meta R${self.valor_meta} para User ID {self.user_id}>"

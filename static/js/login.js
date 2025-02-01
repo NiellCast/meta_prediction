@@ -1,59 +1,63 @@
-// app/static/js/login.js
+// login.js
 
 document.addEventListener('DOMContentLoaded', () => {
-    const loginForm = document.getElementById('loginForm');
-    if (loginForm) {
-        loginForm.addEventListener('submit', async function(e) {
-            e.preventDefault();
-            const formData = new FormData(loginForm);
+    const loginForm = document.getElementById('login-form');
+    if (!loginForm) {
+        console.error('Formulário de login não encontrado.');
+        return;
+    }
 
-            try {
-                const response = await fetch('/login', {
-                    method: 'POST',
-                    headers: {
-                        'X-CSRFToken': getCsrfToken() // Inclui o token CSRF no cabeçalho
-                    },
-                    body: formData
+    loginForm.addEventListener('submit', async function (e) {
+        e.preventDefault();
+        const username = document.getElementById('username').value.trim();
+        const password = document.getElementById('password').value.trim();
+
+        if (!username || !password) {
+            Swal.fire({
+                icon: 'warning',
+                title: 'Campos Vazios',
+                text: 'Por favor, preencha todos os campos.',
+                confirmButtonText: 'Ok'
+            });
+            return;
+        }
+
+        try {
+            const response = await fetch('/login', {
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ username, password })
+            });
+            const data = await response.json();
+
+            if (response.ok) {
+                Swal.fire({
+                    icon: 'success',
+                    title: 'Bem-vindo!',
+                    text: data.message,
+                    confirmButtonText: 'Ok'
+                }).then(() => {
+                    window.location.href = '/banca';
                 });
-                const result = await response.json();
-
-                if (response.ok) {
-                    Swal.fire({
-                        icon: 'success',
-                        title: 'Sucesso',
-                        text: result.message,
-                        confirmButtonText: 'Ok'
-                    }).then(() => {
-                        window.location.href = '/banca';
-                    });
-                } else {
-                    Swal.fire({
-                        icon: 'error',
-                        title: 'Erro',
-                        text: result.message,
-                        confirmButtonText: 'Ok'
-                    });
-                }
-            } catch (error) {
-                console.error('Erro ao fazer login:', error);
+            } else {
                 Swal.fire({
                     icon: 'error',
-                    title: 'Erro',
-                    text: 'Erro ao fazer login. Tente novamente.',
+                    title: 'Erro de Login',
+                    text: data.message || 'Credenciais inválidas.',
                     confirmButtonText: 'Ok'
                 });
             }
-        });
-    }
+        } catch (error) {
+            Swal.fire({
+                icon: 'error',
+                title: 'Erro',
+                text: 'Erro ao processar o login. Tente novamente.',
+                confirmButtonText: 'Ok'
+            });
+            console.error('Erro ao processar o login:', error);
+        }
+    });
 });
-
-/**
- * Função para obter o token CSRF do meta tag
- */
-function getCsrfToken() {
-    const tokenMeta = document.querySelector('meta[name="csrf-token"]');
-    return tokenMeta ? tokenMeta.getAttribute('content') : '';
-}
-
-
-# Melhorias aplicadas ao arquivo

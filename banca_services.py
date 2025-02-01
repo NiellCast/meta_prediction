@@ -1,9 +1,7 @@
-# banca_services.py
-
 from models import db, Saldo, Transacao, Meta
 from datetime import datetime, date
 from sqlalchemy import func
-
+import random  # Para simular a previsão da IA
 
 class BancaManager:
     def initialize(self, app, db_instance):
@@ -35,18 +33,22 @@ class BancaManager:
         db.session.add(transacao)
         db.session.commit()
 
-    def process_add_saldo(self, user_id, data_str, saldo_valor):
+    def process_add_saldo(self, user_id, data_saldo, saldo_valor):
         """
         Adiciona um novo saldo.
         """
         # Converter data_str para objeto date
         try:
-            data_obj = datetime.strptime(data_str, '%Y-%m-%d').date()
+            data_obj = datetime.strptime(data_saldo, '%Y-%m-%d').date()
         except ValueError as e:
             raise ValueError("Formato de data inválido. Use YYYY-MM-DD.") from e
 
-        saldo = Saldo(user_id=user_id, data=data_obj, valor=saldo_valor)
-        db.session.add(saldo)
+        saldo = Saldo.query.filter_by(user_id=user_id, data=data_obj).first()
+        if saldo:
+            saldo.valor += saldo_valor  # Atualiza o saldo existente
+        else:
+            saldo = Saldo(user_id=user_id, data=data_obj, valor=saldo_valor)
+            db.session.add(saldo)
         db.session.commit()
 
     def process_delete_all_saldos(self, user_id):
@@ -93,12 +95,18 @@ class BancaManager:
         evolucao = []
         for saldo in saldos:
             banca_val = float(saldo.valor)
+            depositos = self.get_total_depositos(user_id)
+            saques = self.get_total_saques(user_id)
+            lucro_val = banca_val - saques
+            porcentagem_ganho = (lucro_val / depositos * 100) if depositos > 0 else 0
+
             evolucao.append({
                 "data": saldo.data.strftime('%d/%m/%Y'),  # Formato dia/mês/ano
-                "banca": float(saldo.valor),
-                "depositos": self.get_total_depositos(user_id),
-                "saques": self.get_total_saques(user_id),
-                "lucro": self.get_saldo_calculado(user_id)
+                "banca": f"{banca_val:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+                "depositos": f"{depositos:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+                "saques": f"{saques:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+                "lucro": f"{lucro_val:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+                "porcentagem_ganho": f"{porcentagem_ganho:.2f}%"
             })
         return evolucao
 
@@ -127,14 +135,19 @@ class BancaManager:
     # Implementação das Novas Funções
     # ------------------------------
 
-    def update_saldo(self, user_id: int, saldo_id: int, novo_valor: float):
+    def update_saldo(self, user_id: int, saldo_id: int, novo_valor: float, nova_data: str):
         """
-        Atualiza o valor de um saldo específico.
+        Atualiza o valor e a data de um saldo específico.
         """
         saldo = Saldo.query.filter_by(id=saldo_id, user_id=user_id).first()
         if not saldo:
             raise ValueError("Saldo não encontrado.")
+        try:
+            data_obj = datetime.strptime(nova_data, '%Y-%m-%d').date()
+        except ValueError as e:
+            raise ValueError("Formato de data inválido. Use YYYY-MM-DD.") from e
         saldo.valor = novo_valor
+        saldo.data = data_obj
         db.session.commit()
 
     def delete_saldo(self, user_id: int, saldo_id: int):
@@ -147,18 +160,22 @@ class BancaManager:
         db.session.delete(saldo)
         db.session.commit()
 
-    def update_transacao(self, user_id: int, transacao_id: int, novo_valor: float, novo_tipo: str = None):
+    def update_transacao(self, user_id: int, transacao_id: int, novo_valor: float, novo_tipo: str, nova_data: str):
         """
-        Atualiza o valor e/ou tipo de uma transação específica.
+        Atualiza o valor, tipo e data de uma transação específica.
         """
         transacao = Transacao.query.filter_by(id=transacao_id, user_id=user_id).first()
         if not transacao:
             raise ValueError("Transação não encontrada.")
+        if novo_tipo not in ['deposito', 'saque']:
+            raise ValueError("Tipo de transação inválido.")
+        try:
+            data_obj = datetime.strptime(nova_data, '%Y-%m-%d').date()
+        except ValueError as e:
+            raise ValueError("Formato de data inválido. Use YYYY-MM-DD.") from e
         transacao.valor = novo_valor
-        if novo_tipo:
-            if novo_tipo not in ['deposito', 'saque']:
-                raise ValueError("Tipo de transação inválido.")
-            transacao.tipo = novo_tipo
+        transacao.tipo = novo_tipo
+        transacao.data = data_obj
         db.session.commit()
 
     def delete_transacao(self, user_id: int, transacao_id: int):
@@ -171,18 +188,15 @@ class BancaManager:
         db.session.delete(transacao)
         db.session.commit()
 
+    def get_previsao_ia(self, user_id: int) -> float:
+        """
+        Gera uma previsão da IA para o próximo mês.
+        (Simulação: gera um valor aleatório baseado no saldo atual)
+        """
+        saldo_atual = self.get_saldo_calculado(user_id)
+        # Simulação simples: previsão é saldo atual + um valor aleatório entre -10% a +10%
+        variacao = random.uniform(-0.1, 0.1)
+        previsao = saldo_atual + (saldo_atual * variacao)
+        return round(previsao, 2)
 
-# Instanciar o manager
 banca_manager = BancaManager()
-
-
-if __name__ == "__main__":
-    print("Este módulo faz parte do sistema. Use-o importando-o em seus scripts.")
-
-# Como rodar os testes:
-# 1. Instale o pytest (pip install pytest).
-# 2. Certifique-se de que os testes estão no diretório correto.
-# 3. Execute o comando 'pytest' no terminal para rodar todos os testes.
-
-
-# Melhorias aplicadas ao arquivo

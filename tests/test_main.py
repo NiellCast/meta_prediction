@@ -1,5 +1,3 @@
-# test_main.py
-
 from flask import Flask
 
 app = Flask(__name__)
@@ -12,8 +10,6 @@ def initialize():
 def index():
     return "Hello, World!"
 
-if __name__ == "__main__":
+
+if __name__ == "main":
     app.run(debug=True)
-
-
-# Melhorias aplicadas ao arquivo

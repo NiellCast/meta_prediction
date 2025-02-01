@@ -1,4 +1,4 @@
-// app/static/js/dashboard.js
+//dashboard.js
 
 document.addEventListener('DOMContentLoaded', () => {
     // Carrega dados iniciais
@@ -733,6 +733,3 @@ async function carregarEvolucao() {
         console.error(error);
     }
 }
-
-
-# Melhorias aplicadas ao arquivo

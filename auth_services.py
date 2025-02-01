@@ -1,8 +1,7 @@
-# auth_services.py
-
 from models import db, User
-from sqlalchemy.exc import IntegrityError
+from flask_bcrypt import Bcrypt
 
+bcrypt = Bcrypt()
 
 def init_auth(app, db_instance):
     """
@@ -11,16 +10,14 @@ def init_auth(app, db_instance):
     # Nenhuma inicialização adicional necessária aqui
     pass
 
-
-def login_user_service(username, password, bcrypt):
+def login_user_service(username, password, bcrypt_instance):
     """
     Autentica um usuário.
     """
     user = User.query.filter_by(username=username).first()
-    if user and bcrypt.check_password_hash(user.hashed_password, password):
+    if user and bcrypt_instance.check_password_hash(user.hashed_password, password):
         return user
     return None
-
 
 def register_user_service(username, email, hashed_password):
     """
@@ -30,15 +27,3 @@ def register_user_service(username, email, hashed_password):
     db.session.add(new_user)
     db.session.commit()
     return new_user
-
-
-if __name__ == "__main__":
-    print("Este módulo faz parte do sistema. Use-o importando-o em seus scripts.")
-
-# Como rodar os testes:
-# 1. Instale o pytest (pip install pytest).
-# 2. Certifique-se de que os testes estão no diretório correto.
-# 3. Execute o comando 'pytest' no terminal para rodar todos os testes.
-
-
-# Melhorias aplicadas ao arquivo

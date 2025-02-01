@@ -1,4 +1,4 @@
-// app/static/js/api.js
+//api.js
 
 /**
  * Exibe um toast do Bootstrap.
@@ -58,5 +58,3 @@ function getCsrfToken() {
     return tokenMeta ? tokenMeta.getAttribute('content') : '';
 }
 
-
-# Melhorias aplicadas ao arquivo

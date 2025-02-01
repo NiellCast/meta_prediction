@@ -1,5 +1,3 @@
-# ai_utils.py
-
 import numpy as np
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import PolynomialFeatures
@@ -12,7 +10,7 @@ def calcular_previsao_linear(dados, meta):
 
     # Preparando os dados para o modelo
     dias = np.arange(len(dados)).reshape(-1, 1)
-    valores = np.cumsum([d['valor'] for d in dados])
+    valores = np.array([d['valor'] for d in dados]).cumsum()
 
     modelo = LinearRegression()
     modelo.fit(dias, valores)
@@ -26,6 +24,7 @@ def calcular_previsao_linear(dados, meta):
 
     return int(np.ceil(dias_para_meta)), None
 
+
 def calcular_previsao_polinomial(dados, meta, grau=2):
     """Realiza a previsão polinomial com base nos dados fornecidos."""
     if len(dados) < 3:
@@ -33,7 +32,7 @@ def calcular_previsao_polinomial(dados, meta, grau=2):
 
     # Preparando os dados para o modelo
     dias = np.arange(len(dados)).reshape(-1, 1)
-    valores = np.cumsum([d['valor'] for d in dados])
+    valores = np.array([d['valor'] for d in dados]).cumsum()
 
     modelo = make_pipeline(PolynomialFeatures(grau), LinearRegression())
     modelo.fit(dias, valores)
@@ -51,13 +50,5 @@ def calcular_previsao_polinomial(dados, meta, grau=2):
     return dias_para_meta, None
 
 
-if __name__ == "__main__":
+if __name__ == "main":
     print("Este módulo faz parte do sistema. Use-o importando-o em seus scripts.")
-
-# Como rodar os testes:
-# 1. Instale o pytest (pip install pytest).
-# 2. Certifique-se de que os testes estão no diretório correto.
-# 3. Execute o comando 'pytest' no terminal para rodar todos os testes.
-
-
-# Melhorias aplicadas ao arquivo
