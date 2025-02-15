@@ -11,6 +11,19 @@ app.secret_key = 'sua_chave_secreta_aqui'  # TROQUE para uma chave secreta forte
 DATABASE = 'banca.db'
 
 
+# Função para formatar valores em moeda BRL (ex.: R$ 1.000,90)
+def format_currency(value):
+    try:
+        value = float(value)
+        # Formata no padrão US e depois troca vírgula e ponto
+        return "R$ {:,.2f}".format(value).replace(",", "v").replace(".", ",").replace("v", ".")
+    except:
+        return value
+
+
+app.jinja_env.filters['currency'] = format_currency
+
+
 def get_db_connection():
     conn = sqlite3.connect(DATABASE)
     conn.row_factory = sqlite3.Row
@@ -51,6 +64,14 @@ def init_db():
             date TEXT NOT NULL,
             type TEXT NOT NULL,
             amount REAL NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+    ''')
+    # Tabela para armazenar a meta (target) do usuário
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS user_meta (
+            user_id INTEGER PRIMARY KEY,
+            target REAL,
             FOREIGN KEY(user_id) REFERENCES users(id)
         )
     ''')
@@ -134,43 +155,109 @@ def dashboard():
     user_id = session['user_id']
     conn = get_db_connection()
     daily_balances = conn.execute("SELECT * FROM daily_balances WHERE user_id = ? ORDER BY date", (user_id,)).fetchall()
+    # Agrupa as transações por data e tipo
+    trans_rows = conn.execute("""
+        SELECT date, type, SUM(amount) as total
+        FROM transactions
+        WHERE user_id = ?
+        GROUP BY date, type
+    """, (user_id,)).fetchall()
     transactions = conn.execute("SELECT * FROM transactions WHERE user_id = ? ORDER BY date", (user_id,)).fetchall()
+
+    # Cria um dicionário com os totais de Depósito e Saque por data
+    trans_dict = {}
+    for row in trans_rows:
+        d = row['date']
+        if d not in trans_dict:
+            trans_dict[d] = {'deposit': 0, 'withdrawal': 0}
+        if row['type'] == 'deposit':
+            trans_dict[d]['deposit'] = row['total']
+        elif row['type'] == 'withdrawal':
+            trans_dict[d]['withdrawal'] = row['total']
+
+    computed_balances = []
+    prev_balance = None
+    # Itera pelos registros de saldo diário em ordem de data para calcular os valores
+    for record in daily_balances:
+        rec = dict(record)
+        deposits = trans_dict.get(rec['date'], {}).get('deposit', 0)
+        withdrawals = trans_dict.get(rec['date'], {}).get('withdrawal', 0)
+        if prev_balance is None:
+            profit = 0
+        else:
+            profit = rec['current_balance'] - (prev_balance + deposits - withdrawals)
+        baseline = (prev_balance + deposits - withdrawals) if prev_balance is not None else 0
+        win_percentage = (profit / baseline * 100) if baseline != 0 else 0
+        rec['deposits'] = deposits
+        rec['withdrawals'] = withdrawals
+        rec['profit'] = profit
+        rec['win_percentage'] = win_percentage
+        computed_balances.append(rec)
+        prev_balance = rec['current_balance']
+
+    # Prepara os dados para os gráficos
+    chart_dates = [rec['date'] for rec in computed_balances]
+    chart_balances = [rec['current_balance'] for rec in computed_balances]
+    chart_deposits = [rec['deposits'] for rec in computed_balances]
+    chart_withdrawals = [rec['withdrawals'] for rec in computed_balances]
+    chart_profits = [rec['profit'] for rec in computed_balances]
+
+    # Recupera a meta atual do usuário (caso definida)
+    meta_row = conn.execute("SELECT target FROM user_meta WHERE user_id = ?", (user_id,)).fetchone()
     conn.close()
-    # Preparando dados para os gráficos
-    dates = [record['date'] for record in daily_balances]
-    balances = [record['current_balance'] for record in daily_balances]
-    deposits = [record['deposits'] if record['deposits'] is not None else 0 for record in daily_balances]
-    withdrawals = [record['withdrawals'] if record['withdrawals'] is not None else 0 for record in daily_balances]
-    profits = [record['profit'] if record['profit'] is not None else 0 for record in daily_balances]
-    return render_template('dashboard.html', daily_balances=daily_balances, transactions=transactions,
-                           chart_dates=dates, chart_balances=balances, chart_deposits=deposits,
-                           chart_withdrawals=withdrawals, chart_profits=profits)
+    current_meta = meta_row['target'] if meta_row else None
+
+    # Calcula a previsão da data para atingir a meta, se possível
+    predicted_date = None
+    if current_meta and len(daily_balances) >= 2:
+        X = []
+        y = []
+        for record in daily_balances:
+            try:
+                dt = datetime.strptime(record['date'], '%Y-%m-%d')
+            except ValueError:
+                continue
+            X.append([dt.toordinal()])
+            y.append(record['current_balance'])
+        if len(X) >= 2:
+            X = np.array(X)
+            y = np.array(y)
+            model = LinearRegression()
+            model.fit(X, y)
+            slope = model.coef_[0]
+            intercept = model.intercept_
+            if slope != 0:
+                predicted_ordinal = (current_meta - intercept) / slope
+                predicted_date = datetime.fromordinal(int(predicted_ordinal)).strftime("%Y-%m-%d")
+
+    # Obtém o último registro calculado para exibir o resumo da banca
+    last_record = computed_balances[-1] if computed_balances else None
+
+    return render_template('dashboard.html', daily_balances=computed_balances, transactions=transactions,
+                           chart_dates=chart_dates, chart_balances=chart_balances, chart_deposits=chart_deposits,
+                           chart_withdrawals=chart_withdrawals, chart_profits=chart_profits,
+                           current_meta=current_meta, predicted_date=predicted_date, last_record=last_record)
 
 
-# Rota para adicionar registro diário
+# Rota para adicionar registro diário – removido o input de Meta
 @app.route('/add_balance', methods=['POST'])
 @login_required
 def add_balance():
     user_id = session['user_id']
     date_str = request.form['date']
     current_balance = request.form['current_balance']
-    deposits = request.form.get('deposits', 0)
-    profit = request.form.get('profit', 0)
-    withdrawals = request.form.get('withdrawals', 0)
-    win_percentage = request.form.get('win_percentage', 0)
-    target = request.form.get('target', 0)
     conn = get_db_connection()
     conn.execute('''
-        INSERT INTO daily_balances (user_id, date, current_balance, deposits, profit, withdrawals, win_percentage, target)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (user_id, date_str, current_balance, deposits, profit, withdrawals, win_percentage, target))
+        INSERT INTO daily_balances (user_id, date, current_balance)
+        VALUES (?, ?, ?)
+    ''', (user_id, date_str, current_balance))
     conn.commit()
     conn.close()
     flash('Registro de saldo diário adicionado com sucesso.', 'success')
     return redirect(url_for('dashboard'))
 
 
-# Rota para editar registro diário
+# Rota para editar registro diário – removido o input de Meta
 @app.route('/edit_balance/<int:balance_id>', methods=['GET', 'POST'])
 @login_required
 def edit_balance(balance_id):
@@ -184,16 +271,11 @@ def edit_balance(balance_id):
     if request.method == 'POST':
         date_str = request.form['date']
         current_balance = request.form['current_balance']
-        deposits = request.form.get('deposits', 0)
-        profit = request.form.get('profit', 0)
-        withdrawals = request.form.get('withdrawals', 0)
-        win_percentage = request.form.get('win_percentage', 0)
-        target = request.form.get('target', 0)
         conn.execute('''
             UPDATE daily_balances
-            SET date = ?, current_balance = ?, deposits = ?, profit = ?, withdrawals = ?, win_percentage = ?, target = ?
+            SET date = ?, current_balance = ?
             WHERE id = ? AND user_id = ?
-        ''', (date_str, current_balance, deposits, profit, withdrawals, win_percentage, target, balance_id, user_id))
+        ''', (date_str, current_balance, balance_id, user_id))
         conn.commit()
         conn.close()
         flash('Registro atualizado com sucesso.', 'success')
@@ -215,7 +297,7 @@ def delete_balance(balance_id):
     return redirect(url_for('dashboard'))
 
 
-# Rota para adicionar transação (depósito ou saque)
+# Rota para adicionar transação (Depósito ou Saque)
 @app.route('/add_transaction', methods=['POST'])
 @login_required
 def add_transaction():
@@ -275,51 +357,30 @@ def delete_transaction(trans_id):
     return redirect(url_for('dashboard'))
 
 
-# Rota para previsão com Machine Learning
-@app.route('/predict', methods=['POST'])
+# Nova rota para atualizar a meta (target) do usuário
+@app.route('/update_meta', methods=['POST'])
 @login_required
-def predict():
+def update_meta():
     user_id = session['user_id']
-    target_value = float(request.form['target_value'])
+    new_meta = request.form['meta']
+    try:
+        new_meta = float(new_meta)
+    except ValueError:
+        flash("Meta inválida.", "danger")
+        return redirect(url_for('dashboard'))
     conn = get_db_connection()
-    records = conn.execute("SELECT date, current_balance FROM daily_balances WHERE user_id = ? ORDER BY date",
-                           (user_id,)).fetchall()
+    meta_row = conn.execute("SELECT target FROM user_meta WHERE user_id = ?", (user_id,)).fetchone()
+    if meta_row:
+        conn.execute("UPDATE user_meta SET target = ? WHERE user_id = ?", (new_meta, user_id))
+    else:
+        conn.execute("INSERT INTO user_meta (user_id, target) VALUES (?, ?)", (user_id, new_meta))
+    conn.commit()
     conn.close()
-    if len(records) < 2:
-        flash('Necessário ter pelo menos 2 registros para previsão.', 'warning')
-        return redirect(url_for('dashboard'))
-
-    # Prepara os dados utilizando o ordinal da data como feature
-    X = []
-    y = []
-    for record in records:
-        try:
-            dt = datetime.strptime(record['date'], '%Y-%m-%d')
-        except ValueError:
-            continue
-        X.append([dt.toordinal()])
-        y.append(record['current_balance'])
-    X = np.array(X)
-    y = np.array(y)
-
-    model = LinearRegression()
-    model.fit(X, y)
-
-    slope = model.coef_[0]
-    intercept = model.intercept_
-    if slope == 0:
-        flash('Não é possível fazer previsão com dados estáticos.', 'danger')
-        return redirect(url_for('dashboard'))
-
-    predicted_ordinal = (target_value - intercept) / slope
-    predicted_date = datetime.fromordinal(int(predicted_ordinal))
-
-    flash(f'Previsão: A meta de {target_value} será alcançada por volta de {predicted_date.strftime("%Y-%m-%d")}',
-          'info')
+    flash("Meta atualizada com sucesso.", "success")
     return redirect(url_for('dashboard'))
 
 
-# Rota para "Zerar Banca" (apaga todos os registros do usuário)
+# Rota para "Zerar Banca" (apaga todos os registros do usuário e reseta a meta para R$ 0,00)
 @app.route('/reset', methods=['POST'])
 @login_required
 def reset():
@@ -327,6 +388,7 @@ def reset():
     conn = get_db_connection()
     conn.execute("DELETE FROM daily_balances WHERE user_id = ?", (user_id,))
     conn.execute("DELETE FROM transactions WHERE user_id = ?", (user_id,))
+    conn.execute("UPDATE user_meta SET target = ? WHERE user_id = ?", (0, user_id))
     conn.commit()
     conn.close()
     flash('Banca resetada com sucesso.', 'success')

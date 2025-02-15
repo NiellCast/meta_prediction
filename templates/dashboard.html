@@ -3,47 +3,49 @@
 {% block content %}
 <h2>Dashboard</h2>
 
+<div class="card mb-4">
+  <div class="card-body">
+    <h5 class="card-title">Resumo da Banca</h5>
+    {% if last_record %}
+      <p><strong>Saldo Atual:</strong> {{ last_record.current_balance|currency }}</p>
+      <p><strong>Depósitos:</strong> {{ last_record.deposits|currency }}</p>
+      <p><strong>Saques:</strong> {{ last_record.withdrawals|currency }}</p>
+      <p><strong>Lucro:</strong> {{ last_record.profit|currency }}</p>
+      <p><strong>Lucro %:</strong> {{ last_record.win_percentage or 0 }}%</p>
+    {% else %}
+      <p>Nenhum dado registrado.</p>
+    {% endif %}
+    <p><strong>Meta Atual:</strong> {{ current_meta|currency if current_meta else "R$ 0,00" }}</p>
+    {% if predicted_date %}
+      <p><strong>Previsão de Data:</strong> {{ predicted_date }}</p>
+    {% else %}
+      <p><strong>Previsão de Data:</strong> Não disponível</p>
+    {% endif %}
+  </div>
+</div>
+
 <div class="row">
+  <!-- Formulário: apenas Data e Saldo Atual -->
   <div class="col-md-6">
     <h4>Adicionar Saldo Diário</h4>
     <form method="POST" action="{{ url_for('add_balance') }}">
       <div class="mb-3">
-        <label for="date" class="form-label">Data (YYYY-MM-DD)</label>
+        <label for="date" class="form-label">Data (AAAA-MM-DD)</label>
         <input type="date" class="form-control" id="date" name="date" required>
       </div>
       <div class="mb-3">
         <label for="current_balance" class="form-label">Saldo Atual</label>
         <input type="number" step="0.01" class="form-control" id="current_balance" name="current_balance" required>
       </div>
-      <div class="mb-3">
-        <label for="deposits" class="form-label">Depósitos</label>
-        <input type="number" step="0.01" class="form-control" id="deposits" name="deposits">
-      </div>
-      <div class="mb-3">
-        <label for="profit" class="form-label">Lucro</label>
-        <input type="number" step="0.01" class="form-control" id="profit" name="profit">
-      </div>
-      <div class="mb-3">
-        <label for="withdrawals" class="form-label">Saques</label>
-        <input type="number" step="0.01" class="form-control" id="withdrawals" name="withdrawals">
-      </div>
-      <div class="mb-3">
-        <label for="win_percentage" class="form-label">Ganhos (%)</label>
-        <input type="number" step="0.01" class="form-control" id="win_percentage" name="win_percentage">
-      </div>
-      <div class="mb-3">
-        <label for="target" class="form-label">Meta</label>
-        <input type="number" step="0.01" class="form-control" id="target" name="target">
-      </div>
       <button type="submit" class="btn btn-primary">Adicionar Saldo Diário</button>
     </form>
   </div>
-  
+
   <div class="col-md-6">
     <h4>Adicionar Transação</h4>
     <form method="POST" action="{{ url_for('add_transaction') }}">
       <div class="mb-3">
-        <label for="date" class="form-label">Data (YYYY-MM-DD)</label>
+        <label for="date" class="form-label">Data (AAAA-MM-DD)</label>
         <input type="date" class="form-control" id="date" name="date" required>
       </div>
       <div class="mb-3">
@@ -75,8 +77,7 @@
           <th>Depósitos</th>
           <th>Lucro</th>
           <th>Saques</th>
-          <th>Ganhos (%)</th>
-          <th>Meta</th>
+          <th>Lucro %</th>
           <th>Ações</th>
         </tr>
       </thead>
@@ -84,12 +85,11 @@
         {% for record in daily_balances %}
         <tr>
           <td>{{ record['date'] }}</td>
-          <td>{{ record['current_balance'] }}</td>
-          <td>{{ record['deposits'] or 0 }}</td>
-          <td>{{ record['profit'] or 0 }}</td>
-          <td>{{ record['withdrawals'] or 0 }}</td>
-          <td>{{ record['win_percentage'] or 0 }}</td>
-          <td>{{ record['target'] or 0 }}</td>
+          <td>{{ record['current_balance']|currency }}</td>
+          <td>{{ record['deposits']|currency }}</td>
+          <td>{{ record['profit']|currency }}</td>
+          <td>{{ record['withdrawals']|currency }}</td>
+          <td>{{ record['win_percentage'] or 0 }}%</td>
           <td>
             <a href="{{ url_for('edit_balance', balance_id=record['id']) }}" class="btn btn-sm btn-warning">Editar</a>
             <form action="{{ url_for('delete_balance', balance_id=record['id']) }}" method="POST" style="display:inline-block;">
@@ -121,8 +121,8 @@
         {% for trans in transactions %}
         <tr>
           <td>{{ trans['date'] }}</td>
-          <td>{{ trans['type'] }}</td>
-          <td>{{ trans['amount'] }}</td>
+          <td>{{ "Depósito" if trans['type'] == "deposit" else "Saque" }}</td>
+          <td>{{ trans['amount']|currency }}</td>
           <td>
             <a href="{{ url_for('edit_transaction', trans_id=trans['id']) }}" class="btn btn-sm btn-warning">Editar</a>
             <form action="{{ url_for('delete_transaction', trans_id=trans['id']) }}" method="POST" style="display:inline-block;">
@@ -141,13 +141,18 @@
 <div class="row">
   <div class="col-md-6">
     <h4>Previsão de Meta</h4>
-    <form method="POST" action="{{ url_for('predict') }}">
+    <form method="POST" action="{{ url_for('update_meta') }}">
       <div class="mb-3">
-        <label for="target_value" class="form-label">Digite o valor da meta</label>
-        <input type="number" step="0.01" class="form-control" id="target_value" name="target_value" required>
+        <label for="meta" class="form-label">Meta</label>
+        <input type="number" step="0.01" class="form-control" id="meta" name="meta" value="{{ current_meta or '' }}" required>
       </div>
-      <button type="submit" class="btn btn-info">Prever Data</button>
+      <button type="submit" class="btn btn-info">Editar Meta</button>
     </form>
+    {% if predicted_date %}
+      <p class="mt-2">Previsão de data para alcançar a meta: <strong>{{ predicted_date }}</strong></p>
+    {% else %}
+      <p class="mt-2">Previsão de data não disponível.</p>
+    {% endif %}
   </div>
   <div class="col-md-6 d-flex align-items-center justify-content-end">
     <form method="POST" action="{{ url_for('reset') }}">
