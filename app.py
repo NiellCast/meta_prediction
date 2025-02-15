@@ -5,6 +5,7 @@ from datetime import datetime, date
 import os
 from sklearn.linear_model import LinearRegression
 import numpy as np
+from dateutil.relativedelta import relativedelta  # Requer: pip install python-dateutil
 
 app = Flask(__name__)
 app.secret_key = 'sua_chave_secreta_aqui'  # TROQUE para uma chave secreta forte
@@ -15,13 +16,25 @@ DATABASE = 'banca.db'
 def format_currency(value):
     try:
         value = float(value)
-        # Formata no padrão US e depois troca vírgula e ponto
         return "R$ {:,.2f}".format(value).replace(",", "v").replace(".", ",").replace("v", ".")
     except:
         return value
 
 
 app.jinja_env.filters['currency'] = format_currency
+
+
+# Função para formatar a diferença de tempo entre duas datas em anos, meses e dias
+def format_time_difference(future_date, current_date):
+    rd = relativedelta(future_date, current_date)
+    parts = []
+    if rd.years:
+        parts.append("1 ano" if rd.years == 1 else f"{rd.years} anos")
+    if rd.months:
+        parts.append("1 mês" if rd.months == 1 else f"{rd.months} meses")
+    if rd.days:
+        parts.append("1 dia" if rd.days == 1 else f"{rd.days} dias")
+    return " e ".join(parts) if parts else "0 dias"
 
 
 def get_db_connection():
@@ -208,7 +221,8 @@ def dashboard():
     current_meta = meta_row['target'] if meta_row else None
 
     # Calcula a previsão da data para atingir a meta, se possível
-    predicted_date = None
+    predicted_date_str = None
+    time_remaining = None
     if current_meta and len(daily_balances) >= 2:
         X = []
         y = []
@@ -227,8 +241,9 @@ def dashboard():
             slope = model.coef_[0]
             intercept = model.intercept_
             if slope != 0:
-                predicted_ordinal = (current_meta - intercept) / slope
-                predicted_date = datetime.fromordinal(int(predicted_ordinal)).strftime("%Y-%m-%d")
+                predicted_date_obj = datetime.fromordinal(int((current_meta - intercept) / slope))
+                predicted_date_str = predicted_date_obj.strftime("%d/%m/%Y")
+                time_remaining = format_time_difference(predicted_date_obj, datetime.today())
 
     # Obtém o último registro calculado para exibir o resumo da banca
     last_record = computed_balances[-1] if computed_balances else None
@@ -236,7 +251,8 @@ def dashboard():
     return render_template('dashboard.html', daily_balances=computed_balances, transactions=transactions,
                            chart_dates=chart_dates, chart_balances=chart_balances, chart_deposits=chart_deposits,
                            chart_withdrawals=chart_withdrawals, chart_profits=chart_profits,
-                           current_meta=current_meta, predicted_date=predicted_date, last_record=last_record)
+                           current_meta=current_meta, predicted_date=predicted_date_str, time_remaining=time_remaining,
+                           last_record=last_record)
 
 
 # Rota para adicionar registro diário – removido o input de Meta
