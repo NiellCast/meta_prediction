@@ -248,6 +248,10 @@ def dashboard():
     # Obtém o último registro calculado para exibir o resumo da banca
     last_record = computed_balances[-1] if computed_balances else None
 
+    # Se a meta já foi atingida, mostra mensagem apropriada
+    if current_meta and last_record and last_record['current_balance'] >= current_meta:
+        time_remaining = "A meta já foi batida!"
+
     return render_template('dashboard.html', daily_balances=computed_balances, transactions=transactions,
                            chart_dates=chart_dates, chart_balances=chart_balances, chart_deposits=chart_deposits,
                            chart_withdrawals=chart_withdrawals, chart_profits=chart_profits,

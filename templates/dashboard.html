@@ -143,14 +143,14 @@
       </div>
       <button type="submit" class="btn btn-info">Salvar Meta</button>
     </form>
-    {% if predicted_date and time_remaining %}
+    {% if predicted_date %}
       <p class="mt-2">Previsão de data para alcançar a meta:</p>
       <p><strong>Data:</strong> {{ predicted_date }}</p>
-      <p><strong>Tempo estimado:</strong> Faltam {{ time_remaining }}.</p>
-    {% elif predicted_date %}
-      <p class="mt-2">Previsão de data para alcançar a meta:</p>
-      <p><strong>Data:</strong> {{ predicted_date }}</p>
-      <p><strong>Tempo estimado:</strong> Não disponível.</p>
+      {% if time_remaining == "A meta já foi batida!" %}
+         <p><strong>A meta já foi batida!</strong></p>
+      {% else %}
+         <p><strong>Tempo estimado:</strong> Faltam {{ time_remaining }}.</p>
+      {% endif %}
     {% else %}
       <p class="mt-2">Previsão de data não disponível.</p>
     {% endif %}
@@ -244,3 +244,4 @@
 </script>
 
 {% endblock %}
+  
