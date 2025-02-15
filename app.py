@@ -37,6 +37,29 @@ def format_time_difference(future_date, current_date):
     return " e ".join(parts) if parts else "0 dias"
 
 
+# Função auxiliar para obter o saldo atual do usuário (baseado no último registro diário e transações com data >= base)
+def get_current_balance(user_id):
+    conn = get_db_connection()
+    daily = conn.execute("SELECT * FROM daily_balances WHERE user_id = ? ORDER BY date DESC LIMIT 1",
+                         (user_id,)).fetchone()
+    if daily:
+        base_balance = daily['current_balance']
+        base_date = daily['date']
+    else:
+        base_balance = 0
+        base_date = "0000-00-00"
+    if base_date != "0000-00-00":
+        # Usa ">=" para incluir transações com a mesma data do último registro diário
+        extra_trans = conn.execute("SELECT * FROM transactions WHERE user_id = ? AND date >= ?",
+                                   (user_id, base_date)).fetchall()
+    else:
+        extra_trans = conn.execute("SELECT * FROM transactions WHERE user_id = ?", (user_id,)).fetchall()
+    conn.close()
+    extra_deposits = sum(t['amount'] for t in extra_trans if t['type'] == 'deposit')
+    extra_withdrawals = sum(t['amount'] for t in extra_trans if t['type'] == 'withdrawal')
+    return round(base_balance + extra_deposits - extra_withdrawals, 2)
+
+
 def get_db_connection():
     conn = sqlite3.connect(DATABASE)
     conn.row_factory = sqlite3.Row
@@ -176,8 +199,9 @@ def dashboard():
         GROUP BY date, type
     """, (user_id,)).fetchall()
     transactions = conn.execute("SELECT * FROM transactions WHERE user_id = ? ORDER BY date", (user_id,)).fetchall()
+    conn.close()
 
-    # Cria um dicionário com os totais de Depósito e Saque por data (baseados em daily_balances)
+    # Cria um dicionário com os totais de depósito e saque por data (para os registros diários)
     trans_dict = {}
     for row in trans_rows:
         d = row['date']
@@ -200,61 +224,43 @@ def dashboard():
             profit = rec['current_balance'] - (prev_balance + deposits - withdrawals)
         baseline = (prev_balance + deposits - withdrawals) if prev_balance is not None else 0
         win_percentage = (profit / baseline * 100) if baseline != 0 else 0
-        rec['deposits'] = deposits
-        rec['withdrawals'] = withdrawals
-        rec['profit'] = profit
-        rec['win_percentage'] = win_percentage
+        rec['deposits'] = round(deposits, 2)
+        rec['withdrawals'] = round(withdrawals, 2)
+        rec['profit'] = round(profit, 2)
+        rec['win_percentage'] = round(win_percentage, 2)
         computed_balances.append(rec)
         prev_balance = rec['current_balance']
 
-    # Prepara os dados para os gráficos
-    chart_dates = [rec['date'] for rec in computed_balances]
-    chart_balances = [rec['current_balance'] for rec in computed_balances]
-    chart_deposits = [rec['deposits'] for rec in computed_balances]
-    chart_withdrawals = [rec['withdrawals'] for rec in computed_balances]
-    chart_profits = [rec['profit'] for rec in computed_balances]
+    # Resumo da Banca: recalcular baseado em todas as transações
+    conn = get_db_connection()
+    deposits_row = conn.execute("SELECT SUM(amount) as total FROM transactions WHERE user_id = ? AND type = 'deposit'",
+                                (user_id,)).fetchone()
+    withdrawals_row = conn.execute(
+        "SELECT SUM(amount) as total FROM transactions WHERE user_id = ? AND type = 'withdrawal'",
+        (user_id,)).fetchone()
+    conn.close()
+    total_deposits = round(deposits_row['total'] if deposits_row['total'] is not None else 0, 2)
+    total_withdrawals = round(withdrawals_row['total'] if withdrawals_row['total'] is not None else 0, 2)
+    # Para o resumo, se o saldo atual obtido pela função for menor que total_deposits (por conta de não atualização do registro diário),
+    # consideramos o saldo atual do resumo igual ao total_deposits.
+    calc_balance = get_current_balance(user_id)
+    current_balance_summary = calc_balance if calc_balance >= total_deposits else total_deposits
+    profit = round(current_balance_summary - total_deposits, 2)
+    win_percentage = round((profit / total_deposits * 100), 2) if total_deposits > 0 else 0
+    summary = {
+        'current_balance': current_balance_summary,
+        'deposits': total_deposits,
+        'withdrawals': total_withdrawals,
+        'profit': profit,
+        'win_percentage': win_percentage
+    }
 
-    # Recupera a meta atual do usuário (caso definida)
+    # Cálculo da previsão de meta permanece inalterado
+    conn = get_db_connection()
     meta_row = conn.execute("SELECT target FROM user_meta WHERE user_id = ?", (user_id,)).fetchone()
     conn.close()
     current_meta = meta_row['target'] if meta_row else None
 
-    # Cálculo do resumo da banca atualizado com quaisquer transações adicionadas após o último registro diário
-    if computed_balances:
-        base_record = computed_balances[-1]
-    else:
-        base_record = {'current_balance': 0, 'deposits': 0, 'withdrawals': 0, 'profit': 0, 'win_percentage': 0,
-                       'date': "0000-00-00"}
-
-    conn = get_db_connection()
-    if base_record['date'] != "0000-00-00":
-        extra_trans = conn.execute("SELECT * FROM transactions WHERE user_id = ? AND date > ?",
-                                   (user_id, base_record['date'])).fetchall()
-    else:
-        extra_trans = conn.execute("SELECT * FROM transactions WHERE user_id = ?", (user_id,)).fetchall()
-    conn.close()
-
-    extra_deposits = sum(t['amount'] for t in extra_trans if t['type'] == 'deposit')
-    extra_withdrawals = sum(t['amount'] for t in extra_trans if t['type'] == 'withdrawal')
-
-    summary_current_balance = base_record['current_balance'] + extra_deposits - extra_withdrawals
-    summary_deposits = (base_record.get('deposits') or 0) + extra_deposits
-    summary_withdrawals = (base_record.get('withdrawals') or 0) + extra_withdrawals
-    summary_profit = extra_deposits - extra_withdrawals  # lucro adicional
-    if base_record['current_balance'] != 0:
-        summary_win_percentage = (summary_profit / base_record['current_balance']) * 100
-    else:
-        summary_win_percentage = 0
-
-    summary = {
-        'current_balance': summary_current_balance,
-        'deposits': summary_deposits,
-        'withdrawals': summary_withdrawals,
-        'profit': summary_profit,
-        'win_percentage': summary_win_percentage
-    }
-
-    # Se a meta já foi atingida, define time_remaining como "A meta já foi batida!"
     predicted_date_str = None
     time_remaining = None
     if current_meta and len(daily_balances) >= 2:
@@ -278,19 +284,21 @@ def dashboard():
                 predicted_date_obj = datetime.fromordinal(int((current_meta - intercept) / slope))
                 predicted_date_str = predicted_date_obj.strftime("%d/%m/%Y")
                 time_remaining_calc = format_time_difference(predicted_date_obj, datetime.today())
-                if summary_current_balance >= current_meta:
+                if current_balance_summary >= current_meta:
                     time_remaining = "A meta já foi batida!"
                 else:
                     time_remaining = time_remaining_calc
 
-    # Use o summary calculado para o Resumo da Banca
     last_record = summary
 
     return render_template('dashboard.html', daily_balances=computed_balances, transactions=transactions,
-                           chart_dates=chart_dates, chart_balances=chart_balances, chart_deposits=chart_deposits,
-                           chart_withdrawals=chart_withdrawals, chart_profits=chart_profits,
-                           current_meta=current_meta, predicted_date=predicted_date_str, time_remaining=time_remaining,
-                           last_record=last_record)
+                           chart_dates=[rec['date'] for rec in computed_balances],
+                           chart_balances=[rec['current_balance'] for rec in computed_balances],
+                           chart_deposits=[rec['deposits'] for rec in computed_balances],
+                           chart_withdrawals=[rec['withdrawals'] for rec in computed_balances],
+                           chart_profits=[rec['profit'] for rec in computed_balances],
+                           current_meta=current_meta, predicted_date=predicted_date_str,
+                           time_remaining=time_remaining, last_record=last_record)
 
 
 # Rota para adicionar registro diário – removido o input de Meta
@@ -358,7 +366,17 @@ def add_transaction():
     user_id = session['user_id']
     date_str = request.form['date']
     trans_type = request.form['type']
-    amount = request.form['amount']
+    try:
+        amount = float(request.form['amount'])
+    except ValueError:
+        flash("Valor inválido.", "danger")
+        return redirect(url_for('dashboard'))
+    # Se for saque, verifica se o saldo atual é suficiente
+    if trans_type == "withdrawal":
+        current_balance = get_current_balance(user_id)
+        if current_balance < amount:
+            flash("Saldo insuficiente para saque.", "danger")
+            return redirect(url_for('dashboard'))
     conn = get_db_connection()
     conn.execute('''
         INSERT INTO transactions (user_id, date, type, amount)
@@ -384,7 +402,17 @@ def edit_transaction(trans_id):
     if request.method == 'POST':
         date_str = request.form['date']
         trans_type = request.form['type']
-        amount = request.form['amount']
+        try:
+            amount = float(request.form['amount'])
+        except ValueError:
+            flash("Valor inválido.", "danger")
+            return redirect(url_for('dashboard'))
+        # Se for saque, verifica se o saldo atual é suficiente
+        if trans_type == "withdrawal":
+            current_balance = get_current_balance(user_id)
+            if current_balance < amount:
+                flash("Saldo insuficiente para saque.", "danger")
+                return redirect(url_for('dashboard'))
         conn.execute('''
             UPDATE transactions
             SET date = ?, type = ?, amount = ?
