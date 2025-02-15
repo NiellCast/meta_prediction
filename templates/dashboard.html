@@ -241,11 +241,6 @@
 
   const profitCtx = document.getElementById('profitChart').getContext('2d');
   createChart(profitCtx, 'Lucro', chartProfits, 'purple');
-
-  // Após o envio do formulário de meta, limpa o input
-  document.getElementById('metaForm').addEventListener('submit', function() {
-      document.getElementById('meta').value = "";
-  });
 </script>
 
 {% endblock %}

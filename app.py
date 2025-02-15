@@ -378,12 +378,15 @@ def delete_transaction(trans_id):
 @login_required
 def update_meta():
     user_id = session['user_id']
-    new_meta = request.form['meta']
-    try:
-        new_meta = float(new_meta)
-    except ValueError:
-        flash("Meta inválida.", "danger")
-        return redirect(url_for('dashboard'))
+    new_meta_str = request.form['meta']
+    if new_meta_str == "":
+        new_meta = 0.0
+    else:
+        try:
+            new_meta = float(new_meta_str)
+        except ValueError:
+            flash("Meta inválida.", "danger")
+            return redirect(url_for('dashboard'))
     conn = get_db_connection()
     meta_row = conn.execute("SELECT target FROM user_meta WHERE user_id = ?", (user_id,)).fetchone()
     if meta_row:
