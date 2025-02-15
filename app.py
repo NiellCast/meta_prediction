@@ -177,7 +177,7 @@ def dashboard():
     """, (user_id,)).fetchall()
     transactions = conn.execute("SELECT * FROM transactions WHERE user_id = ? ORDER BY date", (user_id,)).fetchall()
 
-    # Cria um dicionário com os totais de Depósito e Saque por data
+    # Cria um dicionário com os totais de Depósito e Saque por data (baseados em daily_balances)
     trans_dict = {}
     for row in trans_rows:
         d = row['date']
@@ -190,7 +190,6 @@ def dashboard():
 
     computed_balances = []
     prev_balance = None
-    # Itera pelos registros de saldo diário em ordem de data para calcular os valores
     for record in daily_balances:
         rec = dict(record)
         deposits = trans_dict.get(rec['date'], {}).get('deposit', 0)
@@ -220,7 +219,42 @@ def dashboard():
     conn.close()
     current_meta = meta_row['target'] if meta_row else None
 
-    # Calcula a previsão da data para atingir a meta, se possível
+    # Cálculo do resumo da banca atualizado com quaisquer transações adicionadas após o último registro diário
+    if computed_balances:
+        base_record = computed_balances[-1]
+    else:
+        base_record = {'current_balance': 0, 'deposits': 0, 'withdrawals': 0, 'profit': 0, 'win_percentage': 0,
+                       'date': "0000-00-00"}
+
+    conn = get_db_connection()
+    if base_record['date'] != "0000-00-00":
+        extra_trans = conn.execute("SELECT * FROM transactions WHERE user_id = ? AND date > ?",
+                                   (user_id, base_record['date'])).fetchall()
+    else:
+        extra_trans = conn.execute("SELECT * FROM transactions WHERE user_id = ?", (user_id,)).fetchall()
+    conn.close()
+
+    extra_deposits = sum(t['amount'] for t in extra_trans if t['type'] == 'deposit')
+    extra_withdrawals = sum(t['amount'] for t in extra_trans if t['type'] == 'withdrawal')
+
+    summary_current_balance = base_record['current_balance'] + extra_deposits - extra_withdrawals
+    summary_deposits = (base_record.get('deposits') or 0) + extra_deposits
+    summary_withdrawals = (base_record.get('withdrawals') or 0) + extra_withdrawals
+    summary_profit = extra_deposits - extra_withdrawals  # lucro adicional
+    if base_record['current_balance'] != 0:
+        summary_win_percentage = (summary_profit / base_record['current_balance']) * 100
+    else:
+        summary_win_percentage = 0
+
+    summary = {
+        'current_balance': summary_current_balance,
+        'deposits': summary_deposits,
+        'withdrawals': summary_withdrawals,
+        'profit': summary_profit,
+        'win_percentage': summary_win_percentage
+    }
+
+    # Se a meta já foi atingida, define time_remaining como "A meta já foi batida!"
     predicted_date_str = None
     time_remaining = None
     if current_meta and len(daily_balances) >= 2:
@@ -243,14 +277,14 @@ def dashboard():
             if slope != 0:
                 predicted_date_obj = datetime.fromordinal(int((current_meta - intercept) / slope))
                 predicted_date_str = predicted_date_obj.strftime("%d/%m/%Y")
-                time_remaining = format_time_difference(predicted_date_obj, datetime.today())
+                time_remaining_calc = format_time_difference(predicted_date_obj, datetime.today())
+                if summary_current_balance >= current_meta:
+                    time_remaining = "A meta já foi batida!"
+                else:
+                    time_remaining = time_remaining_calc
 
-    # Obtém o último registro calculado para exibir o resumo da banca
-    last_record = computed_balances[-1] if computed_balances else None
-
-    # Se a meta já foi atingida, mostra mensagem apropriada
-    if current_meta and last_record and last_record['current_balance'] >= current_meta:
-        time_remaining = "A meta já foi batida!"
+    # Use o summary calculado para o Resumo da Banca
+    last_record = summary
 
     return render_template('dashboard.html', daily_balances=computed_balances, transactions=transactions,
                            chart_dates=chart_dates, chart_balances=chart_balances, chart_deposits=chart_deposits,
