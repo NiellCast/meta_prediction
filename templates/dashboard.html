@@ -10,7 +10,7 @@
     <p><strong>Depósitos:</strong> {{ last_record.deposits|currency }}</p>
     <p><strong>Saques:</strong> {{ last_record.withdrawals|currency }}</p>
     <p><strong>Lucro:</strong> {{ last_record.profit|currency }}</p>
-    <p><strong>Lucro %:</strong> {{ last_record.win_percentage }}%</p>
+    <p><strong>Porcentagem de lucro:</strong> {{ last_record.win_percentage }}%</p>
     <p><strong>Meta Atual:</strong> {{ current_meta|currency if current_meta else "R$ 0,00" }}</p>
   </div>
 </div>
@@ -68,7 +68,7 @@
           <th>Depósitos</th>
           <th>Lucro</th>
           <th>Saques</th>
-          <th>Lucro %</th>
+          <th>Porcentagem de lucro</th>
           <th>Ações</th>
         </tr>
       </thead>

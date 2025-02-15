@@ -25,8 +25,8 @@ app.jinja_env.filters['currency'] = format_currency
 
 
 # Função para formatar a diferença de tempo entre duas datas em anos, meses e dias
-def format_time_difference(future_date, current_date):
-    rd = relativedelta(future_date, current_date)
+def format_time_difference(future_date, reference_date):
+    rd = relativedelta(future_date, reference_date)
     parts = []
     if rd.years:
         parts.append("1 ano" if rd.years == 1 else f"{rd.years} anos")
@@ -37,7 +37,8 @@ def format_time_difference(future_date, current_date):
     return " e ".join(parts) if parts else "0 dias"
 
 
-# Função auxiliar para obter o saldo atual do usuário (baseado no último registro diário e transações com data >= base)
+# Função auxiliar para obter o saldo atual do usuário
+# Somente considera transações com data > que o último registro diário
 def get_current_balance(user_id):
     conn = get_db_connection()
     daily = conn.execute("SELECT * FROM daily_balances WHERE user_id = ? ORDER BY date DESC LIMIT 1",
@@ -49,8 +50,7 @@ def get_current_balance(user_id):
         base_balance = 0
         base_date = "0000-00-00"
     if base_date != "0000-00-00":
-        # Usa ">=" para incluir transações com a mesma data do último registro diário
-        extra_trans = conn.execute("SELECT * FROM transactions WHERE user_id = ? AND date >= ?",
+        extra_trans = conn.execute("SELECT * FROM transactions WHERE user_id = ? AND date > ?",
                                    (user_id, base_date)).fetchall()
     else:
         extra_trans = conn.execute("SELECT * FROM transactions WHERE user_id = ?", (user_id,)).fetchall()
@@ -190,18 +190,22 @@ def logout():
 def dashboard():
     user_id = session['user_id']
     conn = get_db_connection()
-    daily_balances = conn.execute("SELECT * FROM daily_balances WHERE user_id = ? ORDER BY date", (user_id,)).fetchall()
-    # Agrupa as transações por data e tipo
+    # Para cálculos, os registros diários são obtidos em ordem cronológica (ascendente)
+    daily_balances = conn.execute("SELECT * FROM daily_balances WHERE user_id = ? ORDER BY date ASC",
+                                  (user_id,)).fetchall()
+    # Para exibição, os registros de transações são obtidos em ordem decrescente
+    transactions = conn.execute("SELECT * FROM transactions WHERE user_id = ? ORDER BY date DESC",
+                                (user_id,)).fetchall()
+    # Para cálculos, os registros de transações são obtidos em ordem ascendente
     trans_rows = conn.execute("""
         SELECT date, type, SUM(amount) as total
         FROM transactions
         WHERE user_id = ?
         GROUP BY date, type
     """, (user_id,)).fetchall()
-    transactions = conn.execute("SELECT * FROM transactions WHERE user_id = ? ORDER BY date", (user_id,)).fetchall()
     conn.close()
 
-    # Cria um dicionário com os totais de depósito e saque por data (para os registros diários)
+    # Cálculo dos registros de saldo diário (ascendente)
     trans_dict = {}
     for row in trans_rows:
         d = row['date']
@@ -231,39 +235,62 @@ def dashboard():
         computed_balances.append(rec)
         prev_balance = rec['current_balance']
 
-    # Resumo da Banca: recalcular baseado em todas as transações
-    conn = get_db_connection()
-    deposits_row = conn.execute("SELECT SUM(amount) as total FROM transactions WHERE user_id = ? AND type = 'deposit'",
-                                (user_id,)).fetchone()
-    withdrawals_row = conn.execute(
-        "SELECT SUM(amount) as total FROM transactions WHERE user_id = ? AND type = 'withdrawal'",
-        (user_id,)).fetchone()
-    conn.close()
-    total_deposits = round(deposits_row['total'] if deposits_row['total'] is not None else 0, 2)
-    total_withdrawals = round(withdrawals_row['total'] if withdrawals_row['total'] is not None else 0, 2)
-    # Para o resumo, se o saldo atual obtido pela função for menor que total_deposits (por conta de não atualização do registro diário),
-    # consideramos o saldo atual do resumo igual ao total_deposits.
-    calc_balance = get_current_balance(user_id)
-    current_balance_summary = calc_balance if calc_balance >= total_deposits else total_deposits
-    profit = round(current_balance_summary - total_deposits, 2)
-    win_percentage = round((profit / total_deposits * 100), 2) if total_deposits > 0 else 0
+    # Para exibir o histórico, invertemos a lista (o registro mais recente primeiro)
+    computed_balances_display = computed_balances[::-1]
+
+    # Resumo da Banca: se existir registro diário, utilize o último para base
+    if daily_balances:
+        last_daily = daily_balances[-1]
+        last_daily_date = last_daily['date']
+        base_balance = last_daily['current_balance']
+        base_deposits = last_daily['deposits'] if last_daily['deposits'] is not None else 0
+        base_withdrawals = last_daily['withdrawals'] if last_daily['withdrawals'] is not None else 0
+        conn = get_db_connection()
+        extra_deposits_row = conn.execute(
+            "SELECT SUM(amount) as total FROM transactions WHERE user_id = ? AND type = 'deposit' AND date > ?",
+            (user_id, last_daily_date)).fetchone()
+        extra_withdrawals_row = conn.execute(
+            "SELECT SUM(amount) as total FROM transactions WHERE user_id = ? AND type = 'withdrawal' AND date > ?",
+            (user_id, last_daily_date)).fetchone()
+        conn.close()
+        extra_deposits = round(extra_deposits_row['total'] if extra_deposits_row['total'] is not None else 0, 2)
+        extra_withdrawals = round(extra_withdrawals_row['total'] if extra_withdrawals_row['total'] is not None else 0,
+                                  2)
+        current_balance_summary = round(base_balance + extra_deposits - extra_withdrawals, 2)
+        total_deposits = round(base_deposits + extra_deposits, 2)
+        total_withdrawals = round(base_withdrawals + extra_withdrawals, 2)
+    else:
+        current_balance_summary = get_current_balance(user_id)
+        conn = get_db_connection()
+        deposits_row = conn.execute(
+            "SELECT SUM(amount) as total FROM transactions WHERE user_id = ? AND type = 'deposit'",
+            (user_id,)).fetchone()
+        withdrawals_row = conn.execute(
+            "SELECT SUM(amount) as total FROM transactions WHERE user_id = ? AND type = 'withdrawal'",
+            (user_id,)).fetchone()
+        conn.close()
+        total_deposits = round(deposits_row['total'] if deposits_row['total'] is not None else 0, 2)
+        total_withdrawals = round(withdrawals_row['total'] if withdrawals_row['total'] is not None else 0, 2)
+    current_balance_summary = current_balance_summary if current_balance_summary >= total_deposits else total_deposits
+    profit_summary = round(current_balance_summary - total_deposits, 2)
+    win_percentage_summary = round((profit_summary / total_deposits * 100), 2) if total_deposits > 0 else 0
     summary = {
         'current_balance': current_balance_summary,
         'deposits': total_deposits,
         'withdrawals': total_withdrawals,
-        'profit': profit,
-        'win_percentage': win_percentage
+        'profit': profit_summary,
+        'win_percentage': win_percentage_summary
     }
 
-    # Cálculo da previsão de meta permanece inalterado
+    # Previsão de meta
     conn = get_db_connection()
     meta_row = conn.execute("SELECT target FROM user_meta WHERE user_id = ?", (user_id,)).fetchone()
     conn.close()
-    current_meta = meta_row['target'] if meta_row else None
+    current_meta_value = meta_row['target'] if meta_row else None
 
     predicted_date_str = None
     time_remaining = None
-    if current_meta and len(daily_balances) >= 2:
+    if current_meta_value and len(daily_balances) >= 2:
         X = []
         y = []
         for record in daily_balances:
@@ -281,24 +308,30 @@ def dashboard():
             slope = model.coef_[0]
             intercept = model.intercept_
             if slope != 0:
-                predicted_date_obj = datetime.fromordinal(int((current_meta - intercept) / slope))
+                predicted_date_obj = datetime.fromordinal(int((current_meta_value - intercept) / slope))
                 predicted_date_str = predicted_date_obj.strftime("%d/%m/%Y")
-                time_remaining_calc = format_time_difference(predicted_date_obj, datetime.today())
-                if current_balance_summary >= current_meta:
+                # O tempo restante é calculado com base na data do último registro diário
+                last_record_date = datetime.strptime(daily_balances[-1]['date'], '%Y-%m-%d')
+                time_remaining_calc = format_time_difference(predicted_date_obj, last_record_date)
+                if current_balance_summary >= current_meta_value:
                     time_remaining = "A meta já foi batida!"
                 else:
                     time_remaining = time_remaining_calc
 
     last_record = summary
 
-    return render_template('dashboard.html', daily_balances=computed_balances, transactions=transactions,
+    return render_template('dashboard.html',
+                           daily_balances=computed_balances_display,
+                           transactions=transactions,
                            chart_dates=[rec['date'] for rec in computed_balances],
                            chart_balances=[rec['current_balance'] for rec in computed_balances],
                            chart_deposits=[rec['deposits'] for rec in computed_balances],
                            chart_withdrawals=[rec['withdrawals'] for rec in computed_balances],
                            chart_profits=[rec['profit'] for rec in computed_balances],
-                           current_meta=current_meta, predicted_date=predicted_date_str,
-                           time_remaining=time_remaining, last_record=last_record)
+                           current_meta=current_meta_value,
+                           predicted_date=predicted_date_str,
+                           time_remaining=time_remaining,
+                           last_record=last_record)
 
 
 # Rota para adicionar registro diário – removido o input de Meta
@@ -439,7 +472,7 @@ def delete_transaction(trans_id):
     return redirect(url_for('dashboard'))
 
 
-# Nova rota para atualizar a meta (target) do usuário
+# Rota para atualizar a meta (target) do usuário
 @app.route('/update_meta', methods=['POST'])
 @login_required
 def update_meta():
@@ -477,6 +510,55 @@ def reset():
     conn.commit()
     conn.close()
     flash('Banca resetada com sucesso.', 'success')
+    return redirect(url_for('dashboard'))
+
+
+# Rota para previsão utilizando regressão linear múltipla com features adicionais
+@app.route('/predict', methods=['POST'])
+@login_required
+def predict():
+    user_id = session['user_id']
+    try:
+        target_value = float(request.form['target_value'])
+    except ValueError:
+        flash("Valor da meta inválido.", "danger")
+        return redirect(url_for('dashboard'))
+    conn = get_db_connection()
+    records = conn.execute(
+        "SELECT date, current_balance, deposits, withdrawals FROM daily_balances WHERE user_id = ? ORDER BY date",
+        (user_id,)).fetchall()
+    conn.close()
+    if len(records) < 2:
+        flash('Necessário ter pelo menos 2 registros para previsão.', 'warning')
+        return redirect(url_for('dashboard'))
+    X = []
+    y = []
+    for record in records:
+        try:
+            dt = datetime.strptime(record['date'], '%Y-%m-%d')
+        except ValueError:
+            continue
+        date_ord = dt.toordinal()
+        deposits = record['deposits'] if record['deposits'] is not None else 0
+        withdrawals = record['withdrawals'] if record['withdrawals'] is not None else 0
+        X.append([date_ord, deposits, withdrawals])
+        y.append(record['current_balance'])
+    X = np.array(X)
+    y = np.array(y)
+    model = LinearRegression()
+    model.fit(X, y)
+    w = model.coef_
+    b = model.intercept_
+    if w[0] == 0:
+        flash('Não é possível fazer previsão com dados estáticos.', 'danger')
+        return redirect(url_for('dashboard'))
+    # Suponha que os registros futuros terão depósitos e saques iguais à média histórica:
+    avg_deposits = np.mean([x[1] for x in X])
+    avg_withdrawals = np.mean([x[2] for x in X])
+    predicted_date_ord = (target_value - (w[1] * avg_deposits + w[2] * avg_withdrawals + b)) / w[0]
+    predicted_date = datetime.fromordinal(int(predicted_date_ord))
+    flash(f'Previsão: A meta de {target_value} será alcançada por volta de {predicted_date.strftime("%d/%m/%Y")}',
+          'info')
     return redirect(url_for('dashboard'))
 
 
