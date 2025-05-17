@@ -1,566 +1,455 @@
 from flask import Flask, render_template, request, redirect, session, url_for, flash, jsonify
-import sqlite3
 from werkzeug.security import generate_password_hash, check_password_hash
-from datetime import datetime, date
-import os
-from sklearn.linear_model import LinearRegression
-import numpy as np
-from dateutil.relativedelta import relativedelta  # Requer: pip install python-dateutil
+from datetime import datetime
+import sqlite3
+from dateutil.relativedelta import relativedelta
+from functools import wraps
+
+import db
+from forecast import ForecastEngine
 
 app = Flask(__name__)
-app.secret_key = 'sua_chave_secreta_aqui'  # TROQUE para uma chave secreta forte
-DATABASE = 'banca.db'
+app.secret_key = 'sua_chave_secreta_aqui'  # Troque por uma chave forte em produção
 
+# Expor funções Python no Jinja2
+app.jinja_env.globals.update(
+    enumerate=enumerate,
+    abs=abs,
+    range=range
+)
 
-# Função para formatar valores em moeda BRL (ex.: R$ 1.000,90)
-def format_currency(value):
-    try:
-        value = float(value)
-        return "R$ {:,.2f}".format(value).replace(",", "v").replace(".", ",").replace("v", ".")
-    except:
-        return value
-
-
-app.jinja_env.filters['currency'] = format_currency
-
-
-# Função para formatar a diferença de tempo entre duas datas em anos, meses e dias
-def format_time_difference(future_date, reference_date):
-    rd = relativedelta(future_date, reference_date)
-    parts = []
-    if rd.years:
-        parts.append("1 ano" if rd.years == 1 else f"{rd.years} anos")
-    if rd.months:
-        parts.append("1 mês" if rd.months == 1 else f"{rd.months} meses")
-    if rd.days:
-        parts.append("1 dia" if rd.days == 1 else f"{rd.days} dias")
-    return " e ".join(parts) if parts else "0 dias"
-
-
-# Função auxiliar para obter o saldo atual do usuário
-# Somente considera transações com data > que o último registro diário
-def get_current_balance(user_id):
-    conn = get_db_connection()
-    daily = conn.execute("SELECT * FROM daily_balances WHERE user_id = ? ORDER BY date DESC LIMIT 1",
-                         (user_id,)).fetchone()
-    if daily:
-        base_balance = daily['current_balance']
-        base_date = daily['date']
-    else:
-        base_balance = 0
-        base_date = "0000-00-00"
-    if base_date != "0000-00-00":
-        extra_trans = conn.execute("SELECT * FROM transactions WHERE user_id = ? AND date > ?",
-                                   (user_id, base_date)).fetchall()
-    else:
-        extra_trans = conn.execute("SELECT * FROM transactions WHERE user_id = ?", (user_id,)).fetchall()
-    conn.close()
-    extra_deposits = sum(t['amount'] for t in extra_trans if t['type'] == 'deposit')
-    extra_withdrawals = sum(t['amount'] for t in extra_trans if t['type'] == 'withdrawal')
-    return round(base_balance + extra_deposits - extra_withdrawals, 2)
-
-
-def get_db_connection():
-    conn = sqlite3.connect(DATABASE)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def init_db():
-    conn = get_db_connection()
-    cur = conn.cursor()
-    # Tabela de usuários
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT NOT NULL UNIQUE,
-            password TEXT NOT NULL
-        )
-    ''')
-    # Tabela para registros diários da banca
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS daily_balances (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            date TEXT NOT NULL,
-            current_balance REAL NOT NULL,
-            deposits REAL,
-            profit REAL,
-            withdrawals REAL,
-            win_percentage REAL,
-            target REAL,
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        )
-    ''')
-    # Tabela para transações (depósitos ou saques)
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            date TEXT NOT NULL,
-            type TEXT NOT NULL,
-            amount REAL NOT NULL,
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        )
-    ''')
-    # Tabela para armazenar a meta (target) do usuário
-    cur.execute('''
-        CREATE TABLE IF NOT EXISTS user_meta (
-            user_id INTEGER PRIMARY KEY,
-            target REAL,
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        )
-    ''')
-    conn.commit()
-    conn.close()
-
-
-init_db()
-
-
-# Decorador para proteger rotas que requerem login
 def login_required(f):
-    from functools import wraps
     @wraps(f)
-    def decorated_function(*args, **kwargs):
+    def decorated(*args, **kwargs):
         if 'user_id' not in session:
-            flash('Por favor, faça login primeiro.', 'warning')
             return redirect(url_for('login'))
         return f(*args, **kwargs)
+    return decorated
 
-    return decorated_function
+def format_currency(value):
+    try:
+        v = float(value)
+        return "R$ {:,.2f}".format(v).replace(",", "v").replace(".", ",").replace("v", ".")
+    except:
+        return value
+app.jinja_env.filters['currency'] = format_currency
 
+def format_time_difference(future_date, reference_date):
+    rd = relativedelta(future_date, reference_date)
+    neg = future_date < reference_date
+    years, months, days = abs(rd.years), abs(rd.months), abs(rd.days)
+    parts = []
+    if years:  parts.append(f"{years} ano{'s' if years>1 else ''}")
+    if months: parts.append(f"{months} mês{'es' if months>1 else ''}")
+    if days:   parts.append(f"{days} dia{'s' if days>1 else ''}")
+    txt = " e ".join(parts) if parts else "0 dias"
+    return f"Atrasado por {txt}" if neg else txt
 
 @app.route('/')
 def index():
     return redirect(url_for('dashboard')) if 'user_id' in session else redirect(url_for('login'))
 
-
-# Rota para registro de usuários
-@app.route('/register', methods=['GET', 'POST'])
+@app.route('/register', methods=['GET','POST'])
 def register():
     if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
-        hashed_password = generate_password_hash(password)
-        conn = get_db_connection()
-        cur = conn.cursor()
+        username,password = request.form['username'],request.form['password']
+        hashed = generate_password_hash(password)
+        conn = db.get_db_connection()
         try:
-            cur.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, hashed_password))
+            conn.execute("INSERT INTO users(username,password) VALUES(?,?)",(username,hashed))
             conn.commit()
-            flash('Registro realizado com sucesso! Por favor, faça login.', 'success')
+            flash("Registro realizado com sucesso! Faça login.","success")
             return redirect(url_for('login'))
         except sqlite3.IntegrityError:
-            flash('Nome de usuário já existe. Tente outro.', 'danger')
+            flash("Nome de usuário já existe.","danger")
             return redirect(url_for('register'))
         finally:
             conn.close()
     return render_template('register.html')
 
-
-# Rota para login
-@app.route('/login', methods=['GET', 'POST'])
+@app.route('/login', methods=['GET','POST'])
 def login():
     if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
-        conn = get_db_connection()
-        user = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        username,password = request.form['username'],request.form['password']
+        conn = db.get_db_connection()
+        user = conn.execute("SELECT * FROM users WHERE username = ?",(username,)).fetchone()
         conn.close()
-        if user and check_password_hash(user['password'], password):
-            session['user_id'] = user['id']
-            session['username'] = user['username']
-            flash('Login realizado com sucesso!', 'success')
+        if user and check_password_hash(user['password'],password):
+            session['user_id'],session['username'] = user['id'],user['username']
+            flash("Login realizado com sucesso!","success")
             return redirect(url_for('dashboard'))
-        else:
-            flash('Credenciais inválidas.', 'danger')
+        flash("Credenciais inválidas.","danger")
     return render_template('login.html')
-
 
 @app.route('/logout')
 def logout():
     session.clear()
-    flash('Você saiu da conta.', 'info')
+    flash("Você saiu da conta.","info")
     return redirect(url_for('login'))
 
+@app.route('/recalculate', methods=['POST'])
+@login_required
+def recalculate():
+    uid = session['user_id']
+    conn = db.get_db_connection()
+    rows = conn.execute("SELECT id,date,current_balance FROM daily_balances WHERE user_id = ?",(uid,)).fetchall()
+    for row in rows:
+        d = row['date']
+        dep = conn.execute(
+            "SELECT SUM(amount) FROM transactions WHERE user_id=? AND type='deposit' AND date=? AND ajustar_calculo=1",
+            (uid,d)
+        ).fetchone()[0] or 0
+        wd = conn.execute(
+            "SELECT SUM(amount) FROM transactions WHERE user_id=? AND type='withdrawal' AND date=? AND ajustar_calculo=1",
+            (uid,d)
+        ).fetchone()[0] or 0
+        pr = round((row['current_balance'] + wd) - dep,2)
+        wp = round((pr/dep*100),2) if dep>0 else 0
+        conn.execute(
+            "UPDATE daily_balances SET deposits=?,withdrawals=?,profit=?,win_percentage=? WHERE id=?",
+            (dep,wd,pr,wp,row['id'])
+        )
+    conn.commit()
+    conn.close()
+    flash("Registros recalculados com sucesso.","success")
+    return redirect(url_for('dashboard'))
 
-# Rota principal – Dashboard
+@app.route('/check_daily')
+@login_required
+def check_daily():
+    uid = session['user_id']
+    date_s = request.args.get('date')
+    conn = db.get_db_connection()
+    exists = conn.execute(
+        "SELECT 1 FROM daily_balances WHERE user_id=? AND date=?",
+        (uid,date_s)
+    ).fetchone() is not None
+    conn.close()
+    return jsonify({"exists":exists})
+
 @app.route('/dashboard')
 @login_required
 def dashboard():
-    user_id = session['user_id']
-    conn = get_db_connection()
-    # Para cálculos, os registros diários são obtidos em ordem cronológica (ascendente)
-    daily_balances = conn.execute("SELECT * FROM daily_balances WHERE user_id = ? ORDER BY date ASC",
-                                  (user_id,)).fetchall()
-    # Para exibição, os registros de transações são obtidos em ordem decrescente
-    transactions = conn.execute("SELECT * FROM transactions WHERE user_id = ? ORDER BY date DESC",
-                                (user_id,)).fetchall()
-    # Para cálculos, os registros de transações são obtidos em ordem ascendente
-    trans_rows = conn.execute("""
-        SELECT date, type, SUM(amount) as total
-        FROM transactions
-        WHERE user_id = ?
-        GROUP BY date, type
-    """, (user_id,)).fetchall()
+    uid = session['user_id']
+    conn = db.get_db_connection()
+    daily = conn.execute("""
+        SELECT * FROM daily_balances
+        WHERE id IN (
+            SELECT MAX(id) FROM daily_balances WHERE user_id=? GROUP BY date
+        ) ORDER BY date ASC
+    """,(uid,)).fetchall()
+    txs = conn.execute(
+        "SELECT * FROM transactions WHERE user_id=? ORDER BY date DESC LIMIT 100",
+        (uid,)
+    ).fetchall()
+    meta_row = conn.execute("SELECT target FROM user_meta WHERE user_id=?",(uid,)).fetchone()
     conn.close()
 
-    # Cálculo dos registros de saldo diário (ascendente)
-    trans_dict = {}
-    for row in trans_rows:
-        d = row['date']
-        if d not in trans_dict:
-            trans_dict[d] = {'deposit': 0, 'withdrawal': 0}
-        if row['type'] == 'deposit':
-            trans_dict[d]['deposit'] = row['total']
-        elif row['type'] == 'withdrawal':
-            trans_dict[d]['withdrawal'] = row['total']
+    current_meta = meta_row['target'] if meta_row else None
 
-    computed_balances = []
-    prev_balance = None
-    for record in daily_balances:
-        rec = dict(record)
-        deposits = trans_dict.get(rec['date'], {}).get('deposit', 0)
-        withdrawals = trans_dict.get(rec['date'], {}).get('withdrawal', 0)
-        if prev_balance is None:
-            profit = 0
-        else:
-            profit = rec['current_balance'] - (prev_balance + deposits - withdrawals)
-        baseline = (prev_balance + deposits - withdrawals) if prev_balance is not None else 0
-        win_percentage = (profit / baseline * 100) if baseline != 0 else 0
-        rec['deposits'] = round(deposits, 2)
-        rec['withdrawals'] = round(withdrawals, 2)
-        rec['profit'] = round(profit, 2)
-        rec['win_percentage'] = round(win_percentage, 2)
-        computed_balances.append(rec)
-        prev_balance = rec['current_balance']
+    # Processar lucro diário
+    computed=[]; prev_cb=None
+    for rec in daily:
+        r=dict(rec)
+        dep=r.get('deposits') or 0
+        wd=r.get('withdrawals') or 0
+        cb=r['current_balance']
+        pr=0.0 if prev_cb is None else round(cb - prev_cb - dep + wd,2)
+        wp=round((pr/dep*100),2) if dep>0 else 0
+        r.update({'deposits':dep,'withdrawals':wd,'profit':pr,'win_percentage':wp})
+        computed.append(r)
+        prev_cb=cb
 
-    # Para exibir o histórico, invertemos a lista (o registro mais recente primeiro)
-    computed_balances_display = computed_balances[::-1]
+    chart_dates=[r['date'] for r in computed]
+    chart_balances=[r['current_balance'] for r in computed]
 
-    # Resumo da Banca: se existir registro diário, utilize o último para base
-    if daily_balances:
-        last_daily = daily_balances[-1]
-        last_daily_date = last_daily['date']
-        base_balance = last_daily['current_balance']
-        base_deposits = last_daily['deposits'] if last_daily['deposits'] is not None else 0
-        base_withdrawals = last_daily['withdrawals'] if last_daily['withdrawals'] is not None else 0
-        conn = get_db_connection()
-        extra_deposits_row = conn.execute(
-            "SELECT SUM(amount) as total FROM transactions WHERE user_id = ? AND type = 'deposit' AND date > ?",
-            (user_id, last_daily_date)).fetchone()
-        extra_withdrawals_row = conn.execute(
-            "SELECT SUM(amount) as total FROM transactions WHERE user_id = ? AND type = 'withdrawal' AND date > ?",
-            (user_id, last_daily_date)).fetchone()
-        conn.close()
-        extra_deposits = round(extra_deposits_row['total'] if extra_deposits_row['total'] is not None else 0, 2)
-        extra_withdrawals = round(extra_withdrawals_row['total'] if extra_withdrawals_row['total'] is not None else 0,
-                                  2)
-        current_balance_summary = round(base_balance + extra_deposits - extra_withdrawals, 2)
-        total_deposits = round(base_deposits + extra_deposits, 2)
-        total_withdrawals = round(base_withdrawals + extra_withdrawals, 2)
-    else:
-        current_balance_summary = get_current_balance(user_id)
-        conn = get_db_connection()
-        deposits_row = conn.execute(
-            "SELECT SUM(amount) as total FROM transactions WHERE user_id = ? AND type = 'deposit'",
-            (user_id,)).fetchone()
-        withdrawals_row = conn.execute(
-            "SELECT SUM(amount) as total FROM transactions WHERE user_id = ? AND type = 'withdrawal'",
-            (user_id,)).fetchone()
-        conn.close()
-        total_deposits = round(deposits_row['total'] if deposits_row['total'] is not None else 0, 2)
-        total_withdrawals = round(withdrawals_row['total'] if withdrawals_row['total'] is not None else 0, 2)
-    current_balance_summary = current_balance_summary if current_balance_summary >= total_deposits else total_deposits
-    profit_summary = round(current_balance_summary - total_deposits, 2)
-    win_percentage_summary = round((profit_summary / total_deposits * 100), 2) if total_deposits > 0 else 0
-    summary = {
-        'current_balance': current_balance_summary,
-        'deposits': total_deposits,
-        'withdrawals': total_withdrawals,
-        'profit': profit_summary,
-        'win_percentage': win_percentage_summary
+    last_dep=last_wd=0
+    chart_deposits=[]; chart_withdrawals=[]
+    for r in computed:
+        if r['deposits']>0: last_dep=r['deposits']
+        chart_deposits.append(last_dep)
+        if r['withdrawals']>0: last_wd=r['withdrawals']
+        chart_withdrawals.append(last_wd)
+
+    cum=0; chart_profits=[]
+    for r in computed:
+        cum+=r['profit']
+        chart_profits.append(cum)
+
+    chart_mavg=[]
+    for i in range(len(chart_balances)):
+        w=chart_balances[max(0,i-6):i+1]
+        chart_mavg.append(round(sum(w)/len(w),2))
+
+    heat_matrix=[]; heat_max=0
+    if computed:
+        base_dt=datetime.strptime(computed[0]['date'],"%Y-%m-%d")
+        weeks=max(((datetime.strptime(d['date'],"%Y-%m-%d")-base_dt).days//7) for d in computed)+1
+        heat_matrix=[[None]*weeks for _ in range(7)]
+        for r in computed:
+            dt=datetime.strptime(r['date'],"%Y-%m-%d")
+            w=(dt-base_dt).days//7; wd=dt.weekday()
+            p=r['profit']
+            heat_matrix[wd][w]=p
+            heat_max=max(heat_max,abs(p))
+
+    total_dep=sum(t['amount'] for t in txs if t['type']=='deposit')
+    total_wd=sum(t['amount'] for t in txs if t['type']=='withdrawal')
+    curr_bal=db.get_current_balance(uid)
+    profit_sum=round((curr_bal+total_wd)-total_dep,2)
+    win_sum=round((profit_sum/total_dep*100),2) if total_dep>0 else 0
+    last_record={
+        'current_balance':curr_bal,
+        'deposits':total_dep,
+        'withdrawals':total_wd,
+        'profit':profit_sum,
+        'win_percentage':win_sum
     }
 
-    # Previsão de meta
-    conn = get_db_connection()
-    meta_row = conn.execute("SELECT target FROM user_meta WHERE user_id = ?", (user_id,)).fetchone()
-    conn.close()
-    current_meta_value = meta_row['target'] if meta_row else None
+    percent_meta=round(curr_bal/current_meta*100,2) if current_meta else 0
 
-    predicted_date_str = None
-    time_remaining = None
-    if current_meta_value and len(daily_balances) >= 2:
-        X = []
-        y = []
-        for record in daily_balances:
-            try:
-                dt = datetime.strptime(record['date'], '%Y-%m-%d')
-            except ValueError:
-                continue
-            X.append([dt.toordinal()])
-            y.append(record['current_balance'])
-        if len(X) >= 2:
-            X = np.array(X)
-            y = np.array(y)
-            model = LinearRegression()
-            model.fit(X, y)
-            slope = model.coef_[0]
-            intercept = model.intercept_
-            if slope != 0:
-                predicted_date_obj = datetime.fromordinal(int((current_meta_value - intercept) / slope))
-                predicted_date_str = predicted_date_obj.strftime("%d/%m/%Y")
-                # O tempo restante é calculado com base na data do último registro diário
-                last_record_date = datetime.strptime(daily_balances[-1]['date'], '%Y-%m-%d')
-                time_remaining_calc = format_time_difference(predicted_date_obj, last_record_date)
-                if current_balance_summary >= current_meta_value:
-                    time_remaining = "A meta já foi batida!"
-                else:
-                    time_remaining = time_remaining_calc
-
-    last_record = summary
+    predicted_date=None; time_remaining=None
+    if current_meta and len(computed)>=2:
+        engine=ForecastEngine([{'date':d['date'],'current_balance':d['current_balance']} for d in computed])
+        if curr_bal>=current_meta:
+            predicted_date=datetime.today().strftime("%d/%m/%Y")
+            time_remaining="Meta já batida"
+        else:
+            dtp=engine.predict_date(current_meta,horizon_days=365)
+            if dtp:
+                predicted_date=dtp.strftime("%d/%m/%Y")
+                last_dt=datetime.strptime(computed[-1]['date'],"%Y-%m-%d")
+                time_remaining=format_time_difference(dtp,last_dt)
 
     return render_template('dashboard.html',
-                           daily_balances=computed_balances_display,
-                           transactions=transactions,
-                           chart_dates=[rec['date'] for rec in computed_balances],
-                           chart_balances=[rec['current_balance'] for rec in computed_balances],
-                           chart_deposits=[rec['deposits'] for rec in computed_balances],
-                           chart_withdrawals=[rec['withdrawals'] for rec in computed_balances],
-                           chart_profits=[rec['profit'] for rec in computed_balances],
-                           current_meta=current_meta_value,
-                           predicted_date=predicted_date_str,
-                           time_remaining=time_remaining,
-                           last_record=last_record)
+        daily_balances=list(reversed(computed)),
+        transactions=txs,
+        chart_dates=chart_dates,
+        chart_balances=chart_balances,
+        chart_deposits=chart_deposits,
+        chart_withdrawals=chart_withdrawals,
+        chart_profits=chart_profits,
+        chart_mavg=chart_mavg,
+        heat_matrix=heat_matrix,
+        heat_max=heat_max,
+        current_meta=current_meta,
+        percent_meta=percent_meta,
+        predicted_date=predicted_date,
+        time_remaining=time_remaining,
+        last_record=last_record
+    )
 
-
-# Rota para adicionar registro diário – removido o input de Meta
 @app.route('/add_balance', methods=['POST'])
 @login_required
 def add_balance():
-    user_id = session['user_id']
-    date_str = request.form['date']
-    current_balance = request.form['current_balance']
-    conn = get_db_connection()
-    conn.execute('''
-        INSERT INTO daily_balances (user_id, date, current_balance)
-        VALUES (?, ?, ?)
-    ''', (user_id, date_str, current_balance))
-    conn.commit()
-    conn.close()
-    flash('Registro de saldo diário adicionado com sucesso.', 'success')
+    uid=session['user_id']
+    date_str=request.form['date']
+    try:
+        bal=float(request.form['current_balance'])
+    except ValueError:
+        flash("Valor inválido para saldo atual.","danger")
+        return redirect(url_for('dashboard'))
+
+    conn=db.get_db_connection()
+    try:
+        existing=conn.execute(
+            "SELECT id FROM daily_balances WHERE user_id=? AND date=?",(uid,date_str)
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE daily_balances SET current_balance=? WHERE id=?",(bal,existing['id'])
+            )
+        else:
+            conn.execute(
+                "INSERT INTO daily_balances(user_id,date,current_balance) VALUES(?,?,?)",
+                (uid,date_str,bal)
+            )
+        conn.commit()
+    except:
+        conn.rollback()
+        flash("Erro ao adicionar saldo diário.","danger")
+    finally:
+        conn.close()
     return redirect(url_for('dashboard'))
 
-
-# Rota para editar registro diário – removido o input de Meta
-@app.route('/edit_balance/<int:balance_id>', methods=['GET', 'POST'])
+@app.route('/edit_balance/<int:balance_id>', methods=['GET','POST'])
 @login_required
 def edit_balance(balance_id):
-    user_id = session['user_id']
-    conn = get_db_connection()
-    balance = conn.execute("SELECT * FROM daily_balances WHERE id = ? AND user_id = ?",
-                           (balance_id, user_id)).fetchone()
-    if not balance:
-        flash('Registro não encontrado.', 'danger')
-        return redirect(url_for('dashboard'))
-    if request.method == 'POST':
-        date_str = request.form['date']
-        current_balance = request.form['current_balance']
-        conn.execute('''
-            UPDATE daily_balances
-            SET date = ?, current_balance = ?
-            WHERE id = ? AND user_id = ?
-        ''', (date_str, current_balance, balance_id, user_id))
-        conn.commit()
+    uid=session['user_id']
+    conn=db.get_db_connection()
+    rec=conn.execute(
+        "SELECT * FROM daily_balances WHERE id=? AND user_id=?",(balance_id,uid)
+    ).fetchone()
+    if not rec:
         conn.close()
-        flash('Registro atualizado com sucesso.', 'success')
+        flash("Registro não encontrado.","danger")
+        return redirect(url_for('dashboard'))
+    if request.method=='POST':
+        date_str=request.form['date']
+        try:
+            bal=float(request.form['current_balance'])
+        except ValueError:
+            flash("Valor inválido.","danger")
+            return redirect(url_for('dashboard'))
+        try:
+            conn.execute(
+                "UPDATE daily_balances SET date=?,current_balance=? WHERE id=?",
+                (date_str,bal,balance_id)
+            )
+            conn.commit()
+        except:
+            conn.rollback()
+            flash("Erro ao editar registro.","danger")
+        finally:
+            conn.close()
         return redirect(url_for('dashboard'))
     conn.close()
-    return render_template('edit_balance.html', balance=balance)
+    return render_template('edit_balance.html',balance=rec)
 
-
-# Rota para excluir registro diário
 @app.route('/delete_balance/<int:balance_id>', methods=['POST'])
 @login_required
 def delete_balance(balance_id):
-    user_id = session['user_id']
-    conn = get_db_connection()
-    conn.execute("DELETE FROM daily_balances WHERE id = ? AND user_id = ?", (balance_id, user_id))
-    conn.commit()
-    conn.close()
-    flash('Registro excluído com sucesso.', 'success')
+    uid=session['user_id']
+    conn=db.get_db_connection()
+    try:
+        conn.execute(
+            "DELETE FROM daily_balances WHERE id=? AND user_id=?",(balance_id,uid)
+        )
+        conn.commit()
+    except:
+        conn.rollback()
+        flash("Erro ao excluir registro.","danger")
+    finally:
+        conn.close()
     return redirect(url_for('dashboard'))
 
-
-# Rota para adicionar transação (Depósito ou Saque)
 @app.route('/add_transaction', methods=['POST'])
 @login_required
 def add_transaction():
-    user_id = session['user_id']
-    date_str = request.form['date']
-    trans_type = request.form['type']
+    uid=session['user_id']
+    date_str=request.form['date']
+    ttype=request.form['type']
     try:
-        amount = float(request.form['amount'])
+        amt=float(request.form['amount'])
     except ValueError:
-        flash("Valor inválido.", "danger")
+        flash("Valor inválido.","danger")
         return redirect(url_for('dashboard'))
-    # Se for saque, verifica se o saldo atual é suficiente
-    if trans_type == "withdrawal":
-        current_balance = get_current_balance(user_id)
-        if current_balance < amount:
-            flash("Saldo insuficiente para saque.", "danger")
-            return redirect(url_for('dashboard'))
-    conn = get_db_connection()
-    conn.execute('''
-        INSERT INTO transactions (user_id, date, type, amount)
-        VALUES (?, ?, ?, ?)
-    ''', (user_id, date_str, trans_type, amount))
-    conn.commit()
-    conn.close()
-    flash('Transação adicionada com sucesso.', 'success')
+
+    conn=db.get_db_connection()
+    try:
+        conn.execute(
+            "INSERT INTO transactions(user_id,date,type,amount,ajustar_calculo) VALUES(?,?,?,?,1)",
+            (uid,date_str,ttype,amt)
+        )
+        conn.commit()
+    except:
+        conn.rollback()
+        flash("Erro ao adicionar transação.","danger")
+    finally:
+        conn.close()
     return redirect(url_for('dashboard'))
 
-
-# Rota para editar transação
-@app.route('/edit_transaction/<int:trans_id>', methods=['GET', 'POST'])
+@app.route('/edit_transaction/<int:trans_id>', methods=['GET','POST'])
 @login_required
 def edit_transaction(trans_id):
-    user_id = session['user_id']
-    conn = get_db_connection()
-    transaction = conn.execute("SELECT * FROM transactions WHERE id = ? AND user_id = ?",
-                               (trans_id, user_id)).fetchone()
-    if not transaction:
-        flash('Transação não encontrada.', 'danger')
-        return redirect(url_for('dashboard'))
-    if request.method == 'POST':
-        date_str = request.form['date']
-        trans_type = request.form['type']
-        try:
-            amount = float(request.form['amount'])
-        except ValueError:
-            flash("Valor inválido.", "danger")
-            return redirect(url_for('dashboard'))
-        # Se for saque, verifica se o saldo atual é suficiente
-        if trans_type == "withdrawal":
-            current_balance = get_current_balance(user_id)
-            if current_balance < amount:
-                flash("Saldo insuficiente para saque.", "danger")
-                return redirect(url_for('dashboard'))
-        conn.execute('''
-            UPDATE transactions
-            SET date = ?, type = ?, amount = ?
-            WHERE id = ? AND user_id = ?
-        ''', (date_str, trans_type, amount, trans_id, user_id))
-        conn.commit()
+    uid=session['user_id']
+    conn=db.get_db_connection()
+    tx=conn.execute(
+        "SELECT * FROM transactions WHERE id=? AND user_id=?",(trans_id,uid)
+    ).fetchone()
+    if not tx:
         conn.close()
-        flash('Transação atualizada com sucesso.', 'success')
+        flash("Transação não encontrada.","danger")
+        return redirect(url_for('dashboard'))
+    if request.method=='POST':
+        date_str=request.form['date']
+        ttype=request.form['type']
+        try:
+            amt=float(request.form['amount'])
+        except ValueError:
+            flash("Valor inválido.","danger")
+            return redirect(url_for('dashboard'))
+        try:
+            conn.execute(
+                "UPDATE transactions SET date=?,type=?,amount=? WHERE id=? AND user_id=?",
+                (date_str,ttype,amt,trans_id,uid)
+            )
+            conn.commit()
+        except:
+            conn.rollback()
+            flash("Erro ao editar transação.","danger")
+        finally:
+            conn.close()
         return redirect(url_for('dashboard'))
     conn.close()
-    return render_template('edit_transaction.html', transaction=transaction)
+    return render_template('edit_transaction.html',transaction=tx)
 
-
-# Rota para excluir transação
 @app.route('/delete_transaction/<int:trans_id>', methods=['POST'])
 @login_required
 def delete_transaction(trans_id):
-    user_id = session['user_id']
-    conn = get_db_connection()
-    conn.execute("DELETE FROM transactions WHERE id = ? AND user_id = ?", (trans_id, user_id))
-    conn.commit()
-    conn.close()
-    flash('Transação excluída com sucesso.', 'success')
+    uid=session['user_id']
+    conn=db.get_db_connection()
+    try:
+        conn.execute(
+            "DELETE FROM transactions WHERE id=? AND user_id=?",(trans_id,uid)
+        )
+        conn.commit()
+    except:
+        conn.rollback()
+        flash("Erro ao excluir transação.","danger")
+    finally:
+        conn.close()
     return redirect(url_for('dashboard'))
 
-
-# Rota para atualizar a meta (target) do usuário
 @app.route('/update_meta', methods=['POST'])
 @login_required
 def update_meta():
-    user_id = session['user_id']
-    new_meta_str = request.form['meta']
-    if new_meta_str == "":
-        new_meta = 0.0
-    else:
-        try:
-            new_meta = float(new_meta_str)
-        except ValueError:
-            flash("Meta inválida.", "danger")
-            return redirect(url_for('dashboard'))
-    conn = get_db_connection()
-    meta_row = conn.execute("SELECT target FROM user_meta WHERE user_id = ?", (user_id,)).fetchone()
-    if meta_row:
-        conn.execute("UPDATE user_meta SET target = ? WHERE user_id = ?", (new_meta, user_id))
-    else:
-        conn.execute("INSERT INTO user_meta (user_id, target) VALUES (?, ?)", (user_id, new_meta))
-    conn.commit()
-    conn.close()
-    flash("Meta atualizada com sucesso.", "success")
+    uid=session['user_id']
+    mstr=request.form['meta']
+    try:
+        mval=float(mstr) if mstr else 0.0
+    except ValueError:
+        flash("Meta inválida.","danger")
+        return redirect(url_for('dashboard'))
+
+    conn=db.get_db_connection()
+    try:
+        exists=conn.execute(
+            "SELECT 1 FROM user_meta WHERE user_id=?",(uid,)
+        ).fetchone()
+        if exists:
+            conn.execute(
+                "UPDATE user_meta SET target=? WHERE user_id=?",(mval,uid)
+            )
+        else:
+            conn.execute(
+                "INSERT INTO user_meta(user_id,target) VALUES(?,?)",(uid,mval)
+            )
+        conn.commit()
+    except:
+        conn.rollback()
+        flash("Erro ao atualizar meta.","danger")
+    finally:
+        conn.close()
     return redirect(url_for('dashboard'))
 
-
-# Rota para "Zerar Banca" (apaga todos os registros do usuário e reseta a meta para R$ 0,00)
 @app.route('/reset', methods=['POST'])
 @login_required
 def reset():
-    user_id = session['user_id']
-    conn = get_db_connection()
-    conn.execute("DELETE FROM daily_balances WHERE user_id = ?", (user_id,))
-    conn.execute("DELETE FROM transactions WHERE user_id = ?", (user_id,))
-    conn.execute("UPDATE user_meta SET target = ? WHERE user_id = ?", (0, user_id))
-    conn.commit()
-    conn.close()
-    flash('Banca resetada com sucesso.', 'success')
-    return redirect(url_for('dashboard'))
-
-
-# Rota para previsão utilizando regressão linear múltipla com features adicionais
-@app.route('/predict', methods=['POST'])
-@login_required
-def predict():
-    user_id = session['user_id']
+    uid=session['user_id']
+    conn=db.get_db_connection()
     try:
-        target_value = float(request.form['target_value'])
-    except ValueError:
-        flash("Valor da meta inválido.", "danger")
-        return redirect(url_for('dashboard'))
-    conn = get_db_connection()
-    records = conn.execute(
-        "SELECT date, current_balance, deposits, withdrawals FROM daily_balances WHERE user_id = ? ORDER BY date",
-        (user_id,)).fetchall()
-    conn.close()
-    if len(records) < 2:
-        flash('Necessário ter pelo menos 2 registros para previsão.', 'warning')
-        return redirect(url_for('dashboard'))
-    X = []
-    y = []
-    for record in records:
-        try:
-            dt = datetime.strptime(record['date'], '%Y-%m-%d')
-        except ValueError:
-            continue
-        date_ord = dt.toordinal()
-        deposits = record['deposits'] if record['deposits'] is not None else 0
-        withdrawals = record['withdrawals'] if record['withdrawals'] is not None else 0
-        X.append([date_ord, deposits, withdrawals])
-        y.append(record['current_balance'])
-    X = np.array(X)
-    y = np.array(y)
-    model = LinearRegression()
-    model.fit(X, y)
-    w = model.coef_
-    b = model.intercept_
-    if w[0] == 0:
-        flash('Não é possível fazer previsão com dados estáticos.', 'danger')
-        return redirect(url_for('dashboard'))
-    # Suponha que os registros futuros terão depósitos e saques iguais à média histórica:
-    avg_deposits = np.mean([x[1] for x in X])
-    avg_withdrawals = np.mean([x[2] for x in X])
-    predicted_date_ord = (target_value - (w[1] * avg_deposits + w[2] * avg_withdrawals + b)) / w[0]
-    predicted_date = datetime.fromordinal(int(predicted_date_ord))
-    flash(f'Previsão: A meta de {target_value} será alcançada por volta de {predicted_date.strftime("%d/%m/%Y")}',
-          'info')
+        conn.execute("DELETE FROM daily_balances WHERE user_id=?",(uid,))
+        conn.execute("DELETE FROM transactions WHERE user_id=?",(uid,))
+        conn.execute("DELETE FROM user_meta WHERE user_id=?",(uid,))
+        conn.commit()
+        flash("Banca resetada com sucesso.","success")
+    except:
+        conn.rollback()
+        flash("Erro ao resetar banca.","danger")
+    finally:
+        conn.close()
     return redirect(url_for('dashboard'))
 
-
-if __name__ == '__main__':
+if __name__=='__main__':
     app.run(debug=True)
