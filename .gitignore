@@ -1,4 +1,36 @@
-p.txt
-plano_financeiro.json
-prompt.txt
+# — Arquivos Python compilados
+__pycache__/
+*.py[cod]
+
+# — Banco de dados SQLite local
 banca.db
+*.sqlite3
+
+# — Pasta de instância do Flask (configurações e DB locais)
+instance/
+
+# — Ambientes virtuais
+venv/
+env/
+.venv/
+.env
+
+# — IDEs / editores
+.vscode/
+.idea/
+
+# — Relatórios de cobertura / caches de testes
+.coverage
+htmlcov/
+.pytest_cache/
+
+# — Arquivos de sistema
+.DS_Store
+Thumbs.db
+
+# — Logs
+*.log
+
+
+plano_financeiro_completo.json
+prompt.txt
