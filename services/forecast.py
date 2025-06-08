@@ -1,62 +1,37 @@
-import numpy as np
 from datetime import datetime
+import numpy as np
 from sklearn.linear_model import LinearRegression
 from dateutil.relativedelta import relativedelta
+from typing import Tuple, Optional
 
-class ForecastEngine:
-    def __init__(self, balances, target):
-        """
-        balances: lista de dicts com 'date' (YYYY-MM-DD) e 'current_balance'
-        target: valor da meta a ser alcançado
-        """
-        self.target = target
-        self.X = []
-        self.y = []
-        for b in balances:
-            try:
-                dt = datetime.strptime(b['date'], "%Y-%m-%d")
-            except ValueError:
-                continue
-            self.X.append([dt.toordinal()])
-            self.y.append(b['current_balance'])
-        self.X = np.array(self.X)
-        self.y = np.array(self.y)
-
-    def predict(self):
-        """
-        Retorna uma tupla (predicted_date_str, time_remaining_str):
-         - Se slope <= 0: ("Indefinido", "Sem crescimento")
-         - Se len(X)<2: (None, None)
-         - Caso normal: data prevista e tempo formatado.
-        """
-        if len(self.X) < 2:
+class ForecastService:
+    @staticmethod
+    def predict_date(balances: list, target: float) -> Tuple[Optional[str], Optional[str]]:
+        if target <= 0 or len(balances) < 2:
             return None, None
 
-        model = LinearRegression().fit(self.X, self.y)
-        slope = model.coef_[0]
-        intercept = model.intercept_
+        X = np.array([[datetime.strptime(b['date'], "%Y-%m-%d").toordinal()] for b in balances])
+        y = np.array([b['current_balance'] for b in balances])
+        model = LinearRegression().fit(X, y)
+        slope, intercept = model.coef_[0], model.intercept_
 
         if slope <= 0:
             return "Indefinido", "Sem crescimento"
 
-        ord_pred = int((self.target - intercept) / slope)
+        ord_pred = int((target - intercept) / slope)
         dt_pred = datetime.fromordinal(ord_pred)
-        last_dt = datetime.fromordinal(int(self.X[-1][0]))
-        time_rem = self._format_time_difference(dt_pred, last_dt)
-        return dt_pred.strftime("%d/%m/%Y"), time_rem
+        last_dt = datetime.strptime(balances[-1]['date'], "%Y-%m-%d")
+        delta = ForecastService._format_time_difference(dt_pred, last_dt)
+        return dt_pred.strftime("%d/%m/%Y"), delta
 
     @staticmethod
-    def _format_time_difference(future, reference):
-        """
-        Se future < reference: "A meta deveria ter sido batida há X mês(es) e Y dia(s)"
-        Senão: "A e B e C"
-        """
+    def _format_time_difference(future: datetime, reference: datetime) -> str:
         if future < reference:
             rd = relativedelta(reference, future)
-            months = f"{rd.months} mês(es)" if rd.months else ""
-            days   = f"{rd.days} dia(s)"    if rd.days else ""
-            parts = " e ".join(p for p in [months, days] if p)
-            return f"A meta deveria ter sido batida há {parts}" if parts else "Atrasado"
+            parts = []
+            if rd.months: parts.append(f"{rd.months} mês(es)")
+            if rd.days:   parts.append(f"{rd.days} dia(s)")
+            return "Atrasado por " + " e ".join(parts)
         rd = relativedelta(future, reference)
         parts = []
         if rd.years:  parts.append(f"{rd.years} ano(s)")

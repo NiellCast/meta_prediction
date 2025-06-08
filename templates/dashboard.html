@@ -1,322 +1,198 @@
+<!-- caminho: templates/dashboard.html -->
+
 {% extends "layout.html" %}
+
 {% block title %}Dashboard{% endblock %}
+
 {% block content %}
-<h2>Dashboard</h2>
+<div class="container mt-4">
 
-<div class="card mb-4">
-  <div class="card-body">
-    <h5 class="card-title">Resumo da Banca</h5>
-    <p><strong>Saldo Atual:</strong> {{ last_record.current_balance|currency }}</p>
-    <p><strong>Depósitos:</strong> {{ last_record.deposits|currency }}</p>
-    <p><strong>Saques:</strong> {{ last_record.withdrawals|currency }}</p>
-    <p><strong>Lucro:</strong> {{ last_record.profit|currency }}</p>
-    <p><strong>Porcentagem de lucro:</strong> {{ last_record.win_percentage }}%</p>
-    <p><strong>Meta Atual:</strong> {{ current_meta|currency if current_meta else "R$ 0,00" }}</p>
+  <!-- Resumo da Banca -->
+  <div class="card mb-4">
+    <div class="card-body">
+      <h5 class="card-title">Resumo da Banca</h5>
+      <p><strong>Saldo Atual:</strong> {{ summary.current_balance|currency }}</p>
+      <p><strong>Depósitos:</strong> {{ summary.deposits|currency }}</p>
+      <p><strong>Saques:</strong> {{ summary.withdrawals|currency }}</p>
+      <p><strong>Lucro:</strong> {{ summary.profit|currency }}</p>
+      <p><strong>% Lucro:</strong> {{ summary.win_percentage }}%</p>
+      <p><strong>Meta Atual:</strong> {{ current_meta|currency }}</p>
+      <p><strong>% Progresso da Meta:</strong> {{ percent_meta }}%</p>
+      <p><strong>Previsão para Meta:</strong> {{ predicted_date or 'Indefinido' }}</p>
+      <p><strong>Tempo Restante:</strong> {{ time_remaining or 'Sem crescimento' }}</p>
+      <p><strong>Recomendação Semanal:</strong> {{ weekly_recommendation|currency }}</p>
+      <form action="{{ url_for('dashboard.reset') }}" method="post" class="mt-3">
+        <button type="submit" class="btn btn-danger">Zerar Banca</button>
+      </form>
+    </div>
   </div>
-</div>
 
-<div class="row mb-4">
-  <!-- Cartão: Adicionar Saldo Diário -->
-  <div class="col-md-6 mb-3">
-    <div class="card h-100">
-      <div class="card-header">Adicionar Saldo Diário</div>
-      <div class="card-body d-flex flex-column">
-        <form method="POST" action="{{ url_for('add_balance') }}">
-          <div class="mb-3">
-            <label for="date" class="form-label">Data (AAAA-MM-DD)</label>
-            <input type="date" class="form-control" id="date" name="date" required>
-          </div>
-          <div class="mb-3">
-            <label for="current_balance" class="form-label">Saldo Atual</label>
-            <input type="number" step="0.01" class="form-control" id="current_balance" name="current_balance" required>
-          </div>
-          <div class="mt-auto">
-            <button type="submit" class="btn btn-primary w-100">Adicionar Saldo Diário</button>
-          </div>
-        </form>
+  <!-- Atualizar Meta -->
+  <form action="{{ url_for('dashboard.update_meta') }}" method="post" class="row g-2 align-items-end mb-4">
+    <div class="col-auto">
+      <label for="meta" class="col-form-label">Meta (R$):</label>
+    </div>
+    <div class="col-auto">
+      <input type="text" class="form-control" id="meta" name="meta" placeholder="Insira nova meta">
+    </div>
+    <div class="col-auto">
+      <button type="submit" class="btn btn-success">Atualizar Meta</button>
+    </div>
+  </form>
+
+  <!-- Adicionar Saldo Diário -->
+  <div class="row mb-4">
+    <div class="col-md-6">
+      <form action="{{ url_for('dashboard.add_balance') }}" method="post">
+        <div class="mb-3">
+          <label>Data</label>
+          <input type="date" name="date" class="form-control" required>
+        </div>
+        <div class="mb-3">
+          <label>Saldo Atual</label>
+          <input type="text" name="current_balance" class="form-control" required>
+        </div>
+        <button type="submit" class="btn btn-primary">Adicionar Saldo Diário</button>
+      </form>
+    </div>
+
+    <!-- Adicionar Transação -->
+    <div class="col-md-6">
+      <form action="{{ url_for('dashboard.add_transaction') }}" method="post">
+        <div class="mb-3">
+          <label>Data</label>
+          <input type="date" name="date" class="form-control" required>
+        </div>
+        <div class="mb-3">
+          <label>Tipo</label>
+          <select name="type" class="form-select">
+            <option value="deposit">Depósito</option>
+            <option value="withdrawal">Saque</option>
+          </select>
+        </div>
+        <div class="mb-3">
+          <label>Valor</label>
+          <input type="text" name="amount" class="form-control" required>
+        </div>
+        <button type="submit" class="btn btn-primary">Adicionar Transação</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Histórico de Saldo Diário -->
+  <div class="card mb-4">
+    <div class="card-body">
+      <h5 class="card-title">Histórico de Saldo Diário</h5>
+      <div class="table-responsive" style="max-height:300px;">
+        <table class="table table-striped">
+          <thead>
+            <tr>
+              <th>Data</th><th>Saldo Atual</th><th>Depósitos</th>
+              <th>Lucro</th><th>Saques</th><th>% Lucro</th><th>Ações</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for rec in display_history %}
+            <tr>
+              <td>{{ rec.date }}</td>
+              <td>{{ rec.current_balance|currency }}</td>
+              <td>{{ rec.deposits|currency }}</td>
+              <td>{{ rec.profit|currency }}</td>
+              <td>{{ rec.withdrawals|currency }}</td>
+              <td>{{ rec.win_percentage }}%</td>
+              <td>
+                <a href="{{ url_for('dashboard.edit_balance', balance_id=rec.id) }}"
+                   class="btn btn-sm btn-warning">Editar</a>
+                <form action="{{ url_for('dashboard.delete_balance', balance_id=rec.id) }}"
+                      method="post" style="display:inline;">
+                  <button type="submit" class="btn btn-sm btn-danger">Excluir</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
       </div>
     </div>
   </div>
 
-  <!-- Cartão: Adicionar Transação -->
-  <div class="col-md-6 mb-3">
-    <div class="card h-100">
-      <div class="card-header">Adicionar Transação</div>
-      <div class="card-body d-flex flex-column">
-        <form method="POST" action="{{ url_for('add_transaction') }}">
-          <div class="mb-3">
-            <label for="date_trans" class="form-label">Data (AAAA-MM-DD)</label>
-            <input type="date" class="form-control" id="date_trans" name="date" required>
-          </div>
-          <div class="mb-3">
-            <label for="type" class="form-label">Tipo</label>
-            <select class="form-select" id="type" name="type" required>
-              <option value="deposit">Depósito</option>
-              <option value="withdrawal">Saque</option>
-            </select>
-          </div>
-          <div class="mb-3">
-            <label for="amount" class="form-label">Valor</label>
-            <input type="number" step="0.01" class="form-control" id="amount" name="amount" required>
-          </div>
-          <div class="mt-auto">
-            <button type="submit" class="btn btn-primary w-100">Adicionar Transação</button>
-          </div>
-        </form>
+  <!-- Histórico de Transações -->
+  <div class="card mb-4">
+    <div class="card-body">
+      <h5 class="card-title">Histórico de Transações</h5>
+      <div class="table-responsive" style="max-height:300px;">
+        <table class="table table-striped">
+          <thead>
+            <tr>
+              <th>Data</th><th>Tipo</th><th>Valor</th><th>Ações</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for t in transactions %}
+            <tr>
+              <td>{{ t.date }}</td>
+              <td>{{ 'Depósito' if t.type=='deposit' else 'Saque' }}</td>
+              <td>{{ t.amount|currency }}</td>
+              <td>
+                <a href="{{ url_for('dashboard.edit_transaction', trans_id=t.id) }}"
+                   class="btn btn-sm btn-warning">Editar</a>
+                <form action="{{ url_for('dashboard.delete_transaction', trans_id=t.id) }}"
+                      method="post" style="display:inline;">
+                  <button type="submit" class="btn btn-sm btn-danger">Excluir</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
       </div>
     </div>
   </div>
-</div>
 
-<hr>
-
-<div class="row">
-  <div class="col-12">
-    <h4>Histórico de Saldo Diário</h4>
-    <div style="max-height:300px; overflow-y:auto;">
-      <table class="table table-striped">
-        <thead>
-          <tr>
-            <th>Data</th>
-            <th>Saldo Atual</th>
-            <th>Depósitos</th>
-            <th>Lucro</th>
-            <th>Saques</th>
-            <th>% Lucro</th>
-            <th>Ações</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for r in daily_balances %}
-          <tr>
-            <td>{{ r.date }}</td>
-            <td>{{ r.current_balance|currency }}</td>
-            <td>{{ r.deposits|currency }}</td>
-            <td>{{ r.profit|currency }}</td>
-            <td>{{ r.withdrawals|currency }}</td>
-            <td>{{ r.win_percentage }}%</td>
-            <td>
-              <a href="{{ url_for('edit_balance', balance_id=r.id) }}" class="btn btn-sm btn-warning">Editar</a>
-              <form action="{{ url_for('delete_balance', balance_id=r.id) }}" method="POST" style="display:inline-block;">
-                <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Tem certeza?')">Excluir</button>
-              </form>
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </div>
-</div>
-
-<hr>
-
-<div class="row">
-  <div class="col-12">
-    <h4>Histórico de Transações</h4>
-    <div style="max-height:300px; overflow-y:auto;">
-      <table class="table table-striped">
-        <thead>
-          <tr>
-            <th>Data</th>
-            <th>Tipo</th>
-            <th>Valor</th>
-            <th>Ações</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for t in transactions %}
-          <tr>
-            <td>{{ t.date }}</td>
-            <td>{{ "Depósito" if t.type=="deposit" else "Saque" }}</td>
-            <td>{{ t.amount|currency }}</td>
-            <td>
-              <a href="{{ url_for('edit_transaction', trans_id=t.id) }}" class="btn btn-sm btn-warning">Editar</a>
-              <form action="{{ url_for('delete_transaction', trans_id=t.id) }}" method="POST" style="display:inline-block;">
-                <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Tem certeza?')">Excluir</button>
-              </form>
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </div>
-</div>
-
-<hr>
-
-<div class="row mb-4">
-  <div class="col-md-6">
-    <h4>Previsão de Meta</h4>
-    <form method="POST" action="{{ url_for('update_meta') }}">
-      <div class="mb-3">
-        <label for="meta" class="form-label">Meta</label>
-        <input type="number" step="0.01" class="form-control" id="meta" name="meta" value="{{ current_meta }}" required>
-      </div>
-      <button type="submit" class="btn btn-info">Salvar Meta</button>
-    </form>
-    {% if predicted_date %}
-      <p class="mt-2"><strong>Data Prevista:</strong> {{ predicted_date }}</p>
-      <p><strong>Tempo Restante:</strong> {{ time_remaining }}</p>
-    {% else %}
-      <p class="mt-2 text-muted">Previsão de data não disponível.</p>
-    {% endif %}
-  </div>
-  <div class="col-md-6 d-flex align-items-center justify-content-end">
-    <form method="POST" action="{{ url_for('reset') }}">
-      <button type="submit" class="btn btn-danger" onclick="return confirm('Zerar toda a banca?')">Zerar Banca</button>
-    </form>
-  </div>
-</div>
-
-<hr>
-
-<!-- Gráficos principais em linha -->
-<div class="row text-center mb-4">
-  <!-- Saldo Atual -->
-  <div class="col-lg-4 col-12 mb-3">
-    <h5>Saldo Atual</h5>
-    <div style="position:relative;width:100%;height:300px;">
+  <!-- Gráficos de Linha -->
+  <div class="row">
+    <div class="col-md-6 mb-4">
+      <h5>Saldo Atual</h5>
       <canvas id="balanceChart"></canvas>
     </div>
-  </div>
-  <!-- Lucro Diário Acumulado -->
-  <div class="col-lg-4 col-12 mb-3">
-    <h5>Lucro Diário Acumulado</h5>
-    <div style="position:relative;width:100%;height:300px;">
-      <canvas id="profitChart"></canvas>
+    <div class="col-md-6 mb-4">
+      <h5>Lucro Diário Acumulado</h5>
+      <canvas id="accumProfitChart"></canvas>
+    </div>
+    <div class="col-md-6 mb-4">
+      <h5>Depósitos</h5>
+      <canvas id="depositChart"></canvas>
+    </div>
+    <div class="col-md-6 mb-4">
+      <h5>Saques</h5>
+      <canvas id="withdrawalChart"></canvas>
     </div>
   </div>
-  <!-- Depósitos vs Saques (Pizza) -->
-  <div class="col-lg-4 col-12 mb-3">
-    <h5>Depósitos vs Saques</h5>
-    <div style="position:relative;width:100%;height:300px;">
-      <canvas id="pieChart"></canvas>
-    </div>
-  </div>
-</div>
 
-<!-- Progresso em Relação à Meta -->
-<div class="row mb-4">
-  <div class="col-12">
-    <h5>Progresso da Meta</h5>
-    <div class="progress" style="height:30px;">
-      <div class="progress-bar" role="progressbar"
-           style="width: {{ percent_meta or 0 }}%;"
-           aria-valuenow="{{ percent_meta or 0 }}" aria-valuemin="0" aria-valuemax="100">
-        {{ percent_meta or 0 }}%
-      </div>
-    </div>
-  </div>
 </div>
-
-<!-- Heatmap de Lucro por Dia da Semana -->
-<div class="row mb-4">
-  <div class="col-12">
-    <h5>Heatmap de Lucro por Dia da Semana</h5>
-    <div class="table-responsive">
-      <table class="table table-bordered text-center">
-        <thead>
-          <tr>
-            <th>Dia/Semana</th>
-            {% for w in range(heat_matrix[0]|length) %}
-              <th>Semana {{ w+1 }}</th>
-            {% endfor %}
-          </tr>
-        </thead>
-        <tbody>
-          {% set weekdays = ['Seg','Ter','Qua','Qui','Sex','Sáb','Dom'] %}
-          {% for wd_idx, row in enumerate(heat_matrix) %}
-          <tr>
-            <th>{{ weekdays[wd_idx] }}</th>
-            {% for val in row %}
-              {% if val is not none %}
-                {% set intensity = (abs(val) / (heat_max or 1)) %}
-                <td style="background-color: rgba(0,123,255, {{ intensity }} );">
-                  {{ val|currency }}
-                </td>
-              {% else %}
-                <td></td>
-              {% endif %}
-            {% endfor %}
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </div>
-</div>
-
-<!-- Scripts de Chart.js -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
-  const chartDates       = {{ chart_dates|tojson }};
-  const chartBalances    = {{ chart_balances|tojson }};
-  const chartProfits     = {{ chart_profits|tojson }};
-  const totalDeposits    = {{ last_record.deposits }};
-  const totalWithdrawals = {{ last_record.withdrawals }};
-  const percentMeta      = {{ percent_meta or 0 }};
-  const heatMatrix       = {{ heat_matrix|tojson }};
-  const heatMax          = {{ heat_max or 0 }};
+  const dates       = {{ chart_dates|tojson }};
+  const balances    = {{ chart_balances|tojson }};
+  const deposits    = {{ chart_deposits|tojson }};
+  const withdrawals = {{ chart_withdrawals|tojson }};
+  const profits     = {{ chart_profits|tojson }};
+  const mavg        = {{ chart_mavg|tojson }};
 
-  // Gráfico: Saldo Atual
-  new Chart(document.getElementById('balanceChart').getContext('2d'), {
+  new Chart(document.getElementById('balanceChart'), {
     type: 'line',
-    data: {
-      labels: chartDates,
-      datasets: [{
-        label: 'Saldo Atual',
-        data: chartBalances,
-        fill: false,
-        borderColor: 'blue',
-        tension: 0.1
-      }]
-    },
-    options: {
-      maintainAspectRatio: false,
-      scales: {
-        x: { title: { display: true, text: 'Data' } },
-        y: { title: { display: true, text: 'Saldo Atual' } }
-      }
-    }
+    data: { labels: dates, datasets:[{ label:'Saldo Atual', data:balances, fill:false, tension:0.1 }] }
   });
-
-  // Gráfico: Lucro Diário Acumulado
-  new Chart(document.getElementById('profitChart').getContext('2d'), {
+  new Chart(document.getElementById('accumProfitChart'), {
     type: 'line',
-    data: {
-      labels: chartDates,
-      datasets: [{
-        label: 'Lucro Acumulado',
-        data: chartProfits,
-        fill: false,
-        borderColor: 'purple',
-        tension: 0.1
-      }]
-    },
-    options: {
-      maintainAspectRatio: false,
-      scales: {
-        x: { title: { display: true, text: 'Data' } },
-        y: { title: { display: true, text: 'Lucro' } }
-      }
-    }
+    data: { labels: dates, datasets:[{ label:'Lucro Acumulado', data:profits, fill:false, tension:0.1 }] }
   });
-
-  // Gráfico: Depósitos vs Saques (Pizza)
-  new Chart(document.getElementById('pieChart').getContext('2d'), {
-    type: 'pie',
-    data: {
-      labels: ['Depósitos','Saques'],
-      datasets: [{
-        data: [totalDeposits, totalWithdrawals],
-        backgroundColor: ['#28a745','#dc3545']
-      }]
-    },
-    options: {
-      maintainAspectRatio: false,
-      plugins: { legend: { position: 'bottom' } }
-    }
+  new Chart(document.getElementById('depositChart'), {
+    type: 'line',
+    data: { labels: dates, datasets:[{ label:'Depósitos', data:deposits, fill:false, tension:0.1 }] }
+  });
+  new Chart(document.getElementById('withdrawalChart'), {
+    type: 'line',
+    data: { labels: dates, datasets:[{ label:'Saques', data:withdrawals, fill:false, tension:0.1 }] }
   });
 </script>
-{% endblock %}

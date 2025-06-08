@@ -1,11 +1,16 @@
+<!-- Nome do arquivo completo: templates/edit_transaction.html -->
+
 {% extends "layout.html" %}
+
 {% block title %}Editar Transação{% endblock %}
+
 {% block content %}
 <h2>Editar Transação</h2>
 <form method="POST">
   <div class="mb-3">
     <label for="date" class="form-label">Data (YYYY-MM-DD)</label>
-    <input type="date" class="form-control" id="date" name="date" value="{{ transaction['date'] }}" required>
+    <input type="date" class="form-control" id="date" name="date"
+           value="{{ transaction['date'] }}" required>
   </div>
   <div class="mb-3">
     <label for="type" class="form-label">Tipo</label>
@@ -16,9 +21,10 @@
   </div>
   <div class="mb-3">
     <label for="amount" class="form-label">Valor</label>
-    <input type="number" step="0.01" class="form-control" id="amount" name="amount" value="{{ transaction['amount'] }}" required>
+    <input type="number" step="0.01" class="form-control" id="amount"
+           name="amount" value="{{ transaction['amount'] }}" required>
   </div>
   <button type="submit" class="btn btn-primary">Salvar Alterações</button>
-  <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Cancelar</a>
+  <a href="{{ url_for('dashboard.dashboard') }}" class="btn btn-secondary">Cancelar</a>
 </form>
 {% endblock %}
