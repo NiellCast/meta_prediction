@@ -1,174 +1,306 @@
+from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
+from werkzeug.security import generate_password_hash, check_password_hash
 import os
 import json
-from datetime import datetime, date
-from db.models import Database, User, Balance, Transaction, Goal, init_db, reset_db
-from auth.auth import Auth
-from dashboard.dashboard import Dashboard
-from services.report import ReportService
-from services.forecast import ForecastService
+from datetime import datetime, timedelta
+from functools import wraps
 
-class SimpleFlask:
-    """Simulação simples do Flask usando apenas bibliotecas padrão"""
-    
-    def __init__(self, name):
-        self.name = name
-        self.routes = {}
-        self.session = {}
-        self.request_data = {}
-    
-    def route(self, path, methods=['GET']):
-        def decorator(func):
-            self.routes[path] = {'func': func, 'methods': methods}
-            return func
-        return decorator
-    
-    def run(self, debug=False, port=5000):
-        print(f"Aplicação {self.name} iniciada!")
-        print(f"Simulando servidor na porta {port}")
-        print("Para testar as funcionalidades, use os métodos da classe diretamente.")
-        
-        # Demonstração das funcionalidades
-        self.demo_functionality()
-    
-    def demo_functionality(self):
-        """Demonstra as funcionalidades do sistema"""
-        print("\n=== DEMONSTRAÇÃO DO SISTEMA GERENCIADOR DE BANCA ===\n")
-        
-        # Inicializa componentes
-        db = Database()
-        auth = Auth(db)
-        dashboard = Dashboard(db)
-        
-        # Teste de registro de usuário
-        print("1. Testando registro de usuário...")
-        if auth.register('usuario_teste', 'senha123'):
-            print("✅ Usuário registrado com sucesso!")
-        else:
-            print("❌ Erro no registro (usuário pode já existir)")
-        
-        # Teste de login
-        print("\n2. Testando login...")
-        user = auth.login('usuario_teste', 'senha123')
-        if user:
-            print(f"✅ Login realizado com sucesso! ID: {user['id']}")
-            user_id = user['id']
-        else:
-            print("❌ Erro no login")
-            return
-        
-        # Teste de adição de saldo
-        print("\n3. Testando adição de saldos...")
-        balance_service = Balance(db)
-        dates = ['2024-01-01', '2024-01-02', '2024-01-03']
-        amounts = [1000, 1100, 950]
-        
-        for date_str, amount in zip(dates, amounts):
-            if balance_service.add_balance(user_id, date_str, amount):
-                print(f"✅ Saldo adicionado: {date_str} - R$ {amount}")
-        
-        # Teste de transações
-        print("\n4. Testando transações...")
-        transaction_service = Transaction(db)
-        
-        transactions = [
-            ('2024-01-01', 'deposit', 500, 'Depósito inicial'),
-            ('2024-01-02', 'withdrawal', 200, 'Saque para despesas'),
-            ('2024-01-03', 'deposit', 300, 'Lucro do dia')
-        ]
-        
-        for date_str, type_, amount, desc in transactions:
-            if transaction_service.add_transaction(user_id, date_str, type_, amount, desc):
-                print(f"✅ Transação adicionada: {type_} R$ {amount} em {date_str}")
-        
-        # Teste de meta
-        print("\n5. Testando definição de meta...")
-        goal_service = Goal(db)
-        if goal_service.set_goal(user_id, 5000):
-            print("✅ Meta definida: R$ 5.000")
-        
-        # Teste de relatórios
-        print("\n6. Testando geração de relatórios...")
-        try:
-            report_service = ReportService(db)
-            metrics = report_service.get_user_metrics(user_id)
-            print(f"✅ Métricas calculadas:")
-            print(f"   - Saldo atual: R$ {metrics.get('current_balance', 0):.2f}")
-            print(f"   - Lucro total: R$ {metrics.get('total_profit', 0):.2f}")
-            print(f"   - Total de depósitos: R$ {metrics.get('total_deposits', 0):.2f}")
-            print(f"   - Total de saques: R$ {metrics.get('total_withdrawals', 0):.2f}")
-        except Exception as e:
-            print(f"❌ Erro nos relatórios: {e}")
-        
-        # Teste de previsão
-        print("\n7. Testando previsão...")
-        try:
-            forecast_service = ForecastService(db)
-            goal = goal_service.get_goal(user_id)
-            if goal:
-                prediction = forecast_service.predict_goal_date(user_id, goal['target_amount'])
-                if prediction:
-                    print(f"✅ Previsão para alcançar meta: {prediction}")
-                else:
-                    print("⚠️ Não foi possível calcular previsão (dados insuficientes)")
-        except Exception as e:
-            print(f"❌ Erro na previsão: {e}")
-        
-        print("\n=== DEMONSTRAÇÃO CONCLUÍDA ===")
-        print("\nTodas as funcionalidades principais foram testadas!")
-        print("Os dados foram salvos em 'data.json'")
+app = Flask(__name__)
+app.secret_key = 'sua_chave_secreta_aqui'  # Em produção, use uma chave mais segura
 
-# Instância da aplicação
-app = SimpleFlask(__name__)
+# Configuração do banco de dados JSON
+DATABASE_FILE = 'data.json'
 
-# Inicialização do banco de dados
-db = Database()
+def init_database():
+    """Inicializa o banco de dados JSON se não existir"""
+    if not os.path.exists(DATABASE_FILE):
+        initial_data = {
+            'users': [],
+            'balances': [],
+            'transactions': [],
+            'goals': []
+        }
+        with open(DATABASE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(initial_data, f, indent=2, ensure_ascii=False)
 
-# Instâncias dos serviços
-auth = Auth(db)
-dashboard = Dashboard(db)
-report_service = ReportService(db)
-forecast_service = ForecastService(db)
+def load_data():
+    """Carrega dados do arquivo JSON"""
+    try:
+        with open(DATABASE_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        init_database()
+        return load_data()
+
+def save_data(data):
+    """Salva dados no arquivo JSON"""
+    with open(DATABASE_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False, default=str)
+
+def get_next_id(data, table):
+    """Gera próximo ID para uma tabela"""
+    if not data[table]:
+        return 1
+    return max(item.get('id', 0) for item in data[table]) + 1
+
+def login_required(f):
+    """Decorator para rotas que requerem login"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+def format_currency(value):
+    """Formata valor como moeda brasileira"""
+    try:
+        return f"R$ {float(value):,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+    except:
+        return "R$ 0,00"
+
+# Filtro para templates
+app.jinja_env.filters['currency'] = format_currency
 
 @app.route('/')
 def index():
-    return "Sistema Gerenciador de Banca - Funcionando!"
+    if 'user_id' in session:
+        return redirect(url_for('dashboard'))
+    return redirect(url_for('login'))
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
-    # Simulação de registro
-    return "Página de registro"
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        
+        data = load_data()
+        
+        # Verifica se usuário já existe
+        for user in data['users']:
+            if user['username'] == username:
+                flash('Nome de usuário já existe. Tente outro.', 'danger')
+                return render_template('register.html')
+        
+        # Cria novo usuário
+        new_user = {
+            'id': get_next_id(data, 'users'),
+            'username': username,
+            'password': generate_password_hash(password),
+            'created_at': datetime.now().isoformat()
+        }
+        
+        data['users'].append(new_user)
+        save_data(data)
+        
+        flash('Registro realizado com sucesso! Faça login.', 'success')
+        return redirect(url_for('login'))
+    
+    return render_template('register.html')
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    # Simulação de login
-    return "Página de login"
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        
+        data = load_data()
+        
+        # Busca usuário
+        user = None
+        for u in data['users']:
+            if u['username'] == username:
+                user = u
+                break
+        
+        if user and check_password_hash(user['password'], password):
+            session.clear()
+            session['user_id'] = user['id']
+            session['username'] = user['username']
+            flash('Login realizado com sucesso!', 'success')
+            return redirect(url_for('dashboard'))
+        
+        flash('Credenciais inválidas.', 'danger')
+    
+    return render_template('login.html')
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    flash('Você saiu da conta.', 'info')
+    return redirect(url_for('login'))
 
 @app.route('/dashboard')
-def dashboard_view():
-    # Simulação do dashboard
-    return "Dashboard do usuário"
+@login_required
+def dashboard():
+    user_id = session['user_id']
+    data = load_data()
+    
+    # Busca dados do usuário
+    user_balances = [b for b in data['balances'] if b['user_id'] == user_id]
+    user_transactions = [t for t in data['transactions'] if t['user_id'] == user_id]
+    user_goal = None
+    for g in data['goals']:
+        if g['user_id'] == user_id:
+            user_goal = g
+            break
+    
+    # Ordena por data
+    user_balances.sort(key=lambda x: x['date'])
+    user_transactions.sort(key=lambda x: x['date'], reverse=True)
+    
+    # Calcula resumo
+    current_balance = user_balances[-1]['amount'] if user_balances else 0
+    total_deposits = sum(t['amount'] for t in user_transactions if t['type'] == 'deposit')
+    total_withdrawals = sum(t['amount'] for t in user_transactions if t['type'] == 'withdrawal')
+    total_profit = current_balance - total_deposits + total_withdrawals
+    
+    summary = {
+        'current_balance': current_balance,
+        'deposits': total_deposits,
+        'withdrawals': total_withdrawals,
+        'profit': total_profit,
+        'win_percentage': 0  # Simplificado
+    }
+    
+    # Dados para gráficos
+    chart_dates = [b['date'] for b in user_balances]
+    chart_balances = [b['amount'] for b in user_balances]
+    
+    # Meta
+    current_meta = user_goal['target_amount'] if user_goal else 0
+    percent_meta = (current_balance / current_meta * 100) if current_meta > 0 else 0
+    
+    return render_template('dashboard.html',
+        summary=summary,
+        display_history=list(reversed(user_balances)),
+        transactions=user_transactions,
+        chart_dates=chart_dates,
+        chart_balances=chart_balances,
+        chart_deposits=[0] * len(chart_dates),  # Simplificado
+        chart_withdrawals=[0] * len(chart_dates),  # Simplificado
+        chart_profits=[0] * len(chart_dates),  # Simplificado
+        chart_mavg=[0] * len(chart_dates),  # Simplificado
+        percent_meta=percent_meta,
+        current_meta=current_meta,
+        predicted_date=None,
+        time_remaining=None,
+        heat_matrix=[[None for _ in range(4)] for _ in range(7)],  # Simplificado
+        heat_max=1,
+        weekly_recommendation=0
+    )
 
-def init_database():
-    """Comando para inicializar banco de dados"""
-    init_db()
+@app.route('/add_balance', methods=['POST'])
+@login_required
+def add_balance():
+    user_id = session['user_id']
+    date_str = request.form['date']
+    
+    try:
+        amount = float(request.form['current_balance'])
+    except ValueError:
+        flash('Valor inválido para saldo atual.', 'danger')
+        return redirect(url_for('dashboard'))
+    
+    data = load_data()
+    
+    new_balance = {
+        'id': get_next_id(data, 'balances'),
+        'user_id': user_id,
+        'date': date_str,
+        'amount': amount,
+        'deposits': 0,
+        'withdrawals': 0,
+        'profit': 0,
+        'win_percentage': 0,
+        'created_at': datetime.now().isoformat()
+    }
+    
+    data['balances'].append(new_balance)
+    save_data(data)
+    
+    flash('Saldo diário adicionado com sucesso.', 'success')
+    return redirect(url_for('dashboard'))
 
-def reset_database():
-    """Comando para resetar banco de dados"""
-    reset_db()
+@app.route('/add_transaction', methods=['POST'])
+@login_required
+def add_transaction():
+    user_id = session['user_id']
+    date_str = request.form['date']
+    transaction_type = request.form['type']
+    
+    try:
+        amount = float(request.form['amount'])
+        if amount <= 0:
+            flash('Valor deve ser maior que zero.', 'danger')
+            return redirect(url_for('dashboard'))
+    except ValueError:
+        flash('Valor inválido.', 'danger')
+        return redirect(url_for('dashboard'))
+    
+    data = load_data()
+    
+    new_transaction = {
+        'id': get_next_id(data, 'transactions'),
+        'user_id': user_id,
+        'date': date_str,
+        'type': transaction_type,
+        'amount': amount,
+        'created_at': datetime.now().isoformat()
+    }
+    
+    data['transactions'].append(new_transaction)
+    save_data(data)
+    
+    flash('Transação adicionada com sucesso.', 'success')
+    return redirect(url_for('dashboard'))
+
+@app.route('/update_meta', methods=['POST'])
+@login_required
+def update_meta():
+    user_id = session['user_id']
+    
+    try:
+        target = float(request.form.get('meta', 0))
+    except ValueError:
+        flash('Meta inválida.', 'danger')
+        return redirect(url_for('dashboard'))
+    
+    data = load_data()
+    
+    # Remove meta anterior se existir
+    data['goals'] = [g for g in data['goals'] if g['user_id'] != user_id]
+    
+    # Adiciona nova meta
+    new_goal = {
+        'id': get_next_id(data, 'goals'),
+        'user_id': user_id,
+        'target_amount': target,
+        'created_at': datetime.now().isoformat()
+    }
+    
+    data['goals'].append(new_goal)
+    save_data(data)
+    
+    flash('Meta atualizada com sucesso.', 'success')
+    return redirect(url_for('dashboard'))
+
+@app.route('/reset', methods=['POST'])
+@login_required
+def reset():
+    user_id = session['user_id']
+    data = load_data()
+    
+    # Remove todos os dados do usuário
+    data['balances'] = [b for b in data['balances'] if b['user_id'] != user_id]
+    data['transactions'] = [t for t in data['transactions'] if t['user_id'] != user_id]
+    data['goals'] = [g for g in data['goals'] if g['user_id'] != user_id]
+    
+    save_data(data)
+    
+    flash('Banca resetada com sucesso.', 'success')
+    return redirect(url_for('dashboard'))
 
 if __name__ == '__main__':
-    import sys
-    
-    # Verifica se é comando de inicialização
-    if len(sys.argv) > 1:
-        if sys.argv[1] == 'init-db':
-            init_database()
-        elif sys.argv[1] == 'reset-db':
-            reset_database()
-        else:
-            print("Comandos disponíveis:")
-            print("  python app.py init-db  - Inicializa o banco de dados")
-            print("  python app.py reset-db - Reseta o banco de dados")
-    else:
-        # Executa a aplicação
-        app.run(debug=True)
+    init_database()
+    app.run(debug=True, host='0.0.0.0', port=5000)
