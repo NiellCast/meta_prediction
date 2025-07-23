@@ -1,387 +1,394 @@
 #!/usr/bin/env python3
+"""
+Sistema de Gerenciamento de Banca Esportiva - Versão CLI
+Aplicação de linha de comando para gerenciar banca esportiva sem dependências de rede.
+"""
+
 import json
 import os
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
-import hashlib
-import uuid
+import sys
 from datetime import datetime, timedelta
-import re
+import hashlib
 
-# Import our models
+# Importar módulos locais
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from db.models import Database
+from services.forecast_engine import ForecastEngine
+from services.report import ReportService
 
-class WebHandler(BaseHTTPRequestHandler):
-    def __init__(self, *args, **kwargs):
+class BankingCLI:
+    def __init__(self):
         self.db = Database()
-        self.sessions = {}
-        super().__init__(*args, **kwargs)
-    
-    def do_GET(self):
-        parsed_path = urlparse(self.path)
-        path = parsed_path.path
+        self.forecast_engine = ForecastEngine()
+        self.report_service = ReportService()
+        self.current_user = None
         
-        if path == '/':
-            self.serve_login_page()
-        elif path == '/register':
-            self.serve_register_page()
-        elif path == '/dashboard':
-            self.serve_dashboard()
-        elif path == '/logout':
-            self.handle_logout()
-        elif path.startswith('/static/'):
-            self.serve_static_file(path)
+    def hash_password(self, password):
+        """Hash da senha usando SHA-256"""
+        return hashlib.sha256(password.encode()).hexdigest()
+    
+    def clear_screen(self):
+        """Limpa a tela do terminal"""
+        os.system('cls' if os.name == 'nt' else 'clear')
+    
+    def format_currency(self, value):
+        """Formata valor como moeda brasileira"""
+        return f"R$ {value:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+    
+    def print_header(self, title):
+        """Imprime cabeçalho formatado"""
+        print("\n" + "="*60)
+        print(f"  {title.upper()}")
+        print("="*60)
+    
+    def print_menu(self, title, options):
+        """Imprime menu formatado"""
+        self.print_header(title)
+        for i, option in enumerate(options, 1):
+            print(f"  {i}. {option}")
+        print(f"  0. Voltar/Sair")
+        print("-"*60)
+    
+    def get_input(self, prompt, input_type=str, required=True):
+        """Obtém entrada do usuário com validação"""
+        while True:
+            try:
+                value = input(f"{prompt}: ").strip()
+                if not value and required:
+                    print("❌ Este campo é obrigatório!")
+                    continue
+                if input_type == float:
+                    return float(value.replace(',', '.'))
+                elif input_type == int:
+                    return int(value)
+                return value
+            except ValueError:
+                print(f"❌ Valor inválido! Digite um {input_type.__name__} válido.")
+    
+    def register(self):
+        """Registro de novo usuário"""
+        self.print_header("REGISTRO DE USUÁRIO")
+        
+        username = self.get_input("Nome de usuário")
+        
+        # Verificar se usuário já existe
+        if self.db.get_user_by_username(username):
+            print("❌ Usuário já existe!")
+            return False
+        
+        password = self.get_input("Senha")
+        email = self.get_input("Email")
+        
+        # Criar usuário
+        user_data = {
+            'username': username,
+            'password': self.hash_password(password),
+            'email': email
+        }
+        
+        user_id = self.db.create_user(user_data)
+        if user_id:
+            print("✅ Usuário registrado com sucesso!")
+            return True
         else:
-            self.send_error(404)
+            print("❌ Erro ao registrar usuário!")
+            return False
     
-    def do_POST(self):
-        parsed_path = urlparse(self.path)
-        path = parsed_path.path
+    def login(self):
+        """Login do usuário"""
+        self.print_header("LOGIN")
         
-        content_length = int(self.headers.get('Content-Length', 0))
-        post_data = self.rfile.read(content_length).decode('utf-8')
-        form_data = parse_qs(post_data)
+        username = self.get_input("Nome de usuário")
+        password = self.get_input("Senha")
         
-        # Convert form data to simple dict
-        data = {}
-        for key, value in form_data.items():
-            data[key] = value[0] if value else ''
-        
-        if path == '/login':
-            self.handle_login(data)
-        elif path == '/register':
-            self.handle_register(data)
-        elif path == '/add_balance':
-            self.handle_add_balance(data)
-        elif path == '/add_transaction':
-            self.handle_add_transaction(data)
-        elif path == '/set_goal':
-            self.handle_set_goal(data)
-        elif path == '/reset_balance':
-            self.handle_reset_balance()
+        user = self.db.get_user_by_username(username)
+        if user and user['password'] == self.hash_password(password):
+            self.current_user = user
+            print(f"✅ Bem-vindo, {username}!")
+            return True
         else:
-            self.send_error(404)
+            print("❌ Credenciais inválidas!")
+            return False
     
-    def serve_login_page(self):
-        html = """
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Login - Gerenciador de Banca</title>
-            <meta charset="utf-8">
-            <style>
-                body { font-family: Arial, sans-serif; max-width: 400px; margin: 100px auto; padding: 20px; }
-                .form-group { margin-bottom: 15px; }
-                label { display: block; margin-bottom: 5px; }
-                input[type="text"], input[type="password"] { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; }
-                button { background: #007bff; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; }
-                button:hover { background: #0056b3; }
-                .link { text-align: center; margin-top: 20px; }
-                .error { color: red; margin-bottom: 15px; }
-            </style>
-        </head>
-        <body>
-            <h2>Login</h2>
-            <form method="post" action="/login">
-                <div class="form-group">
-                    <label>Usuário:</label>
-                    <input type="text" name="username" required>
-                </div>
-                <div class="form-group">
-                    <label>Senha:</label>
-                    <input type="password" name="password" required>
-                </div>
-                <button type="submit">Entrar</button>
-            </form>
-            <div class="link">
-                <a href="/register">Criar nova conta</a>
-            </div>
-        </body>
-        </html>
-        """
-        self.send_response(200)
-        self.send_header('Content-type', 'text/html; charset=utf-8')
-        self.end_headers()
-        self.wfile.write(html.encode('utf-8'))
-    
-    def serve_register_page(self):
-        html = """
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Registro - Gerenciador de Banca</title>
-            <meta charset="utf-8">
-            <style>
-                body { font-family: Arial, sans-serif; max-width: 400px; margin: 100px auto; padding: 20px; }
-                .form-group { margin-bottom: 15px; }
-                label { display: block; margin-bottom: 5px; }
-                input[type="text"], input[type="password"] { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; }
-                button { background: #28a745; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; }
-                button:hover { background: #1e7e34; }
-                .link { text-align: center; margin-top: 20px; }
-            </style>
-        </head>
-        <body>
-            <h2>Criar Conta</h2>
-            <form method="post" action="/register">
-                <div class="form-group">
-                    <label>Usuário:</label>
-                    <input type="text" name="username" required>
-                </div>
-                <div class="form-group">
-                    <label>Senha:</label>
-                    <input type="password" name="password" required>
-                </div>
-                <button type="submit">Criar Conta</button>
-            </form>
-            <div class="link">
-                <a href="/">Já tem conta? Faça login</a>
-            </div>
-        </body>
-        </html>
-        """
-        self.send_response(200)
-        self.send_header('Content-type', 'text/html; charset=utf-8')
-        self.end_headers()
-        self.wfile.write(html.encode('utf-8'))
-    
-    def serve_dashboard(self):
-        # Check if user is logged in
-        session_id = self.get_session_id()
-        if not session_id or session_id not in self.sessions:
-            self.redirect('/')
+    def show_dashboard(self):
+        """Exibe dashboard principal"""
+        if not self.current_user:
             return
         
-        user_id = self.sessions[session_id]
-        user = self.db.get_user_by_id(user_id)
-        if not user:
-            self.redirect('/')
+        user_id = self.current_user['id']
+        
+        # Obter dados
+        balances = self.db.get_balances_by_user(user_id)
+        transactions = self.db.get_transactions_by_user(user_id)
+        goals = self.db.get_goals_by_user(user_id)
+        
+        self.print_header(f"DASHBOARD - {self.current_user['username']}")
+        
+        # Saldo atual
+        current_balance = balances[-1]['amount'] if balances else 0
+        print(f"💰 Saldo Atual: {self.format_currency(current_balance)}")
+        
+        # Estatísticas
+        if balances:
+            initial_balance = balances[0]['amount']
+            profit_loss = current_balance - initial_balance
+            profit_percentage = (profit_loss / initial_balance * 100) if initial_balance > 0 else 0
+            
+            print(f"📈 Lucro/Prejuízo: {self.format_currency(profit_loss)}")
+            print(f"📊 Percentual: {profit_percentage:.2f}%")
+        
+        # Transações recentes
+        if transactions:
+            print(f"\n📋 Últimas {min(5, len(transactions))} transações:")
+            for transaction in transactions[-5:]:
+                date = transaction['date']
+                type_symbol = "💰" if transaction['type'] == 'deposit' else "💸"
+                print(f"  {type_symbol} {date}: {self.format_currency(transaction['amount'])}")
+        
+        # Metas
+        if goals:
+            print(f"\n🎯 Metas ativas: {len(goals)}")
+            for goal in goals:
+                progress = (current_balance / goal['target_amount'] * 100) if goal['target_amount'] > 0 else 0
+                print(f"  • {goal['description']}: {progress:.1f}% ({self.format_currency(goal['target_amount'])})")
+        
+        print("-"*60)
+    
+    def add_balance(self):
+        """Adiciona saldo diário"""
+        self.print_header("ADICIONAR SALDO DIÁRIO")
+        
+        amount = self.get_input("Valor do saldo", float)
+        date = self.get_input("Data (YYYY-MM-DD) ou Enter para hoje", str, False)
+        
+        if not date:
+            date = datetime.now().strftime('%Y-%m-%d')
+        
+        balance_data = {
+            'user_id': self.current_user['id'],
+            'date': date,
+            'amount': amount
+        }
+        
+        if self.db.create_balance(balance_data):
+            print(f"✅ Saldo de {self.format_currency(amount)} adicionado para {date}!")
+        else:
+            print("❌ Erro ao adicionar saldo!")
+    
+    def add_transaction(self):
+        """Adiciona transação"""
+        self.print_header("ADICIONAR TRANSAÇÃO")
+        
+        print("Tipo de transação:")
+        print("1. Depósito")
+        print("2. Saque")
+        
+        choice = self.get_input("Escolha", int)
+        if choice not in [1, 2]:
+            print("❌ Opção inválida!")
             return
         
-        # Get user data
-        current_balance = self.db.get_current_balance(user_id)
-        transactions = self.db.get_recent_transactions(user_id, 10)
-        goal = self.db.get_user_goal(user_id)
+        transaction_type = 'deposit' if choice == 1 else 'withdrawal'
+        amount = self.get_input("Valor", float)
+        description = self.get_input("Descrição", str, False)
         
-        # Calculate metrics
-        total_deposits = sum(t['amount'] for t in transactions if t['type'] == 'deposit')
-        total_withdrawals = sum(t['amount'] for t in transactions if t['type'] == 'withdrawal')
-        net_result = total_deposits - total_withdrawals
+        transaction_data = {
+            'user_id': self.current_user['id'],
+            'type': transaction_type,
+            'amount': amount,
+            'description': description or f"{'Depósito' if choice == 1 else 'Saque'} via CLI",
+            'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
         
-        html = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Dashboard - Gerenciador de Banca</title>
-            <meta charset="utf-8">
-            <style>
-                body {{ font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }}
-                .header {{ background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }}
-                .card {{ background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; }}
-                .metrics {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; }}
-                .metric {{ text-align: center; padding: 20px; background: #f8f9fa; border-radius: 8px; }}
-                .metric h3 {{ margin: 0 0 10px 0; color: #666; }}
-                .metric .value {{ font-size: 24px; font-weight: bold; }}
-                .positive {{ color: #28a745; }}
-                .negative {{ color: #dc3545; }}
-                .form-group {{ margin-bottom: 15px; }}
-                label {{ display: block; margin-bottom: 5px; }}
-                input, select {{ width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; }}
-                button {{ background: #007bff; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; margin-right: 10px; }}
-                button:hover {{ background: #0056b3; }}
-                .btn-success {{ background: #28a745; }}
-                .btn-success:hover {{ background: #1e7e34; }}
-                .btn-danger {{ background: #dc3545; }}
-                .btn-danger:hover {{ background: #c82333; }}
-                .transactions {{ max-height: 300px; overflow-y: auto; }}
-                .transaction {{ padding: 10px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; }}
-            </style>
-        </head>
-        <body>
-            <div class="header">
-                <h1>Olá, {user['username']}!</h1>
-                <a href="/logout">Sair</a>
-            </div>
-            
-            <div class="metrics">
-                <div class="metric">
-                    <h3>Saldo Atual</h3>
-                    <div class="value">R$ {current_balance:.2f}</div>
-                </div>
-                <div class="metric">
-                    <h3>Total Depósitos</h3>
-                    <div class="value positive">R$ {total_deposits:.2f}</div>
-                </div>
-                <div class="metric">
-                    <h3>Total Saques</h3>
-                    <div class="value negative">R$ {total_withdrawals:.2f}</div>
-                </div>
-                <div class="metric">
-                    <h3>Resultado Líquido</h3>
-                    <div class="value {'positive' if net_result >= 0 else 'negative'}">R$ {net_result:.2f}</div>
-                </div>
-            </div>
-            
-            <div class="card">
-                <h3>Adicionar Saldo Diário</h3>
-                <form method="post" action="/add_balance">
-                    <div class="form-group">
-                        <label>Data:</label>
-                        <input type="date" name="date" value="{datetime.now().strftime('%Y-%m-%d')}" required>
-                    </div>
-                    <div class="form-group">
-                        <label>Saldo (R$):</label>
-                        <input type="number" name="balance" step="0.01" required>
-                    </div>
-                    <button type="submit" class="btn-success">Adicionar Saldo</button>
-                </form>
-            </div>
-            
-            <div class="card">
-                <h3>Nova Transação</h3>
-                <form method="post" action="/add_transaction">
-                    <div class="form-group">
-                        <label>Tipo:</label>
-                        <select name="type" required>
-                            <option value="deposit">Depósito</option>
-                            <option value="withdrawal">Saque</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>Valor (R$):</label>
-                        <input type="number" name="amount" step="0.01" required>
-                    </div>
-                    <div class="form-group">
-                        <label>Descrição:</label>
-                        <input type="text" name="description">
-                    </div>
-                    <button type="submit">Adicionar Transação</button>
-                </form>
-            </div>
-            
-            <div class="card">
-                <h3>Definir Meta</h3>
-                <form method="post" action="/set_goal">
-                    <div class="form-group">
-                        <label>Meta de Saldo (R$):</label>
-                        <input type="number" name="target_amount" step="0.01" value="{goal['target_amount'] if goal else ''}" required>
-                    </div>
-                    <div class="form-group">
-                        <label>Data Limite:</label>
-                        <input type="date" name="target_date" value="{goal['target_date'] if goal else ''}" required>
-                    </div>
-                    <button type="submit" class="btn-success">Definir Meta</button>
-                </form>
-            </div>
-            
-            <div class="card">
-                <h3>Transações Recentes</h3>
-                <div class="transactions">
-                    {''.join([f'<div class="transaction"><span>{t["description"]} ({t["type"]})</span><span class="{"positive" if t["type"] == "deposit" else "negative"}">R$ {t["amount"]:.2f}</span></div>' for t in transactions])}
-                </div>
-            </div>
-            
-            <div class="card">
-                <form method="post" action="/reset_balance">
-                    <button type="submit" class="btn-danger" onclick="return confirm('Tem certeza que deseja resetar a banca?')">Reset da Banca</button>
-                </form>
-            </div>
-        </body>
-        </html>
-        """
-        self.send_response(200)
-        self.send_header('Content-type', 'text/html; charset=utf-8')
-        self.end_headers()
-        self.wfile.write(html.encode('utf-8'))
-    
-    def handle_login(self, data):
-        username = data.get('username', '')
-        password = data.get('password', '')
-        
-        user = self.db.authenticate_user(username, password)
-        if user:
-            session_id = str(uuid.uuid4())
-            self.sessions[session_id] = user['id']
-            self.send_response(302)
-            self.send_header('Location', '/dashboard')
-            self.send_header('Set-Cookie', f'session_id={session_id}; Path=/')
-            self.end_headers()
+        if self.db.create_transaction(transaction_data):
+            print(f"✅ {'Depósito' if choice == 1 else 'Saque'} de {self.format_currency(amount)} registrado!")
         else:
-            self.redirect('/')
+            print("❌ Erro ao registrar transação!")
     
-    def handle_register(self, data):
-        username = data.get('username', '')
-        password = data.get('password', '')
+    def add_goal(self):
+        """Adiciona meta"""
+        self.print_header("DEFINIR META")
         
-        if self.db.create_user(username, password):
-            self.redirect('/')
+        description = self.get_input("Descrição da meta")
+        target_amount = self.get_input("Valor alvo", float)
+        target_date = self.get_input("Data alvo (YYYY-MM-DD)", str)
+        
+        goal_data = {
+            'user_id': self.current_user['id'],
+            'description': description,
+            'target_amount': target_amount,
+            'target_date': target_date
+        }
+        
+        if self.db.create_goal(goal_data):
+            print(f"✅ Meta '{description}' de {self.format_currency(target_amount)} criada!")
         else:
-            self.redirect('/register')
+            print("❌ Erro ao criar meta!")
     
-    def handle_add_balance(self, data):
-        session_id = self.get_session_id()
-        if session_id and session_id in self.sessions:
-            user_id = self.sessions[session_id]
-            date = data.get('date', '')
-            balance = float(data.get('balance', 0))
-            self.db.add_daily_balance(user_id, date, balance)
-        self.redirect('/dashboard')
+    def show_forecast(self):
+        """Exibe previsão"""
+        self.print_header("PREVISÃO DE CRESCIMENTO")
+        
+        user_id = self.current_user['id']
+        balances = self.db.get_balances_by_user(user_id)
+        
+        if len(balances) < 2:
+            print("❌ Dados insuficientes para previsão (mínimo 2 registros de saldo)")
+            return
+        
+        # Preparar dados para previsão
+        dates = [datetime.strptime(b['date'], '%Y-%m-%d') for b in balances]
+        amounts = [b['amount'] for b in balances]
+        
+        # Converter datas para números (dias desde o primeiro registro)
+        base_date = dates[0]
+        x_values = [(d - base_date).days for d in dates]
+        
+        # Fazer previsão
+        try:
+            forecast_data = self.forecast_engine.predict_balance_trend(x_values, amounts, days_ahead=30)
+            
+            print(f"📈 Tendência de crescimento:")
+            print(f"   Coeficiente angular: {forecast_data['slope']:.4f}")
+            print(f"   Intercepto: {self.format_currency(forecast_data['intercept'])}")
+            
+            print(f"\n🔮 Previsão para 30 dias:")
+            for i, prediction in enumerate(forecast_data['predictions'][:7], 1):  # Mostrar apenas 7 dias
+                future_date = datetime.now() + timedelta(days=i)
+                print(f"   {future_date.strftime('%Y-%m-%d')}: {self.format_currency(prediction)}")
+            
+        except Exception as e:
+            print(f"❌ Erro ao calcular previsão: {e}")
     
-    def handle_add_transaction(self, data):
-        session_id = self.get_session_id()
-        if session_id and session_id in self.sessions:
-            user_id = self.sessions[session_id]
-            transaction_type = data.get('type', '')
-            amount = float(data.get('amount', 0))
-            description = data.get('description', '')
-            self.db.add_transaction(user_id, transaction_type, amount, description)
-        self.redirect('/dashboard')
+    def show_reports(self):
+        """Exibe relatórios"""
+        self.print_header("RELATÓRIOS")
+        
+        user_id = self.current_user['id']
+        
+        try:
+            # Relatório de performance
+            performance = self.report_service.generate_performance_report(user_id)
+            
+            print("📊 RELATÓRIO DE PERFORMANCE:")
+            print(f"   Saldo inicial: {self.format_currency(performance.get('initial_balance', 0))}")
+            print(f"   Saldo atual: {self.format_currency(performance.get('current_balance', 0))}")
+            print(f"   Lucro/Prejuízo: {self.format_currency(performance.get('profit_loss', 0))}")
+            print(f"   Percentual: {performance.get('profit_percentage', 0):.2f}%")
+            
+            # Relatório de transações
+            transactions_report = self.report_service.generate_transactions_summary(user_id)
+            
+            print(f"\n💰 RESUMO DE TRANSAÇÕES:")
+            print(f"   Total de depósitos: {self.format_currency(transactions_report.get('total_deposits', 0))}")
+            print(f"   Total de saques: {self.format_currency(transactions_report.get('total_withdrawals', 0))}")
+            print(f"   Número de transações: {transactions_report.get('transaction_count', 0)}")
+            
+        except Exception as e:
+            print(f"❌ Erro ao gerar relatórios: {e}")
     
-    def handle_set_goal(self, data):
-        session_id = self.get_session_id()
-        if session_id and session_id in self.sessions:
-            user_id = self.sessions[session_id]
-            target_amount = float(data.get('target_amount', 0))
-            target_date = data.get('target_date', '')
-            self.db.set_user_goal(user_id, target_amount, target_date)
-        self.redirect('/dashboard')
+    def reset_bank(self):
+        """Reset da banca"""
+        self.print_header("RESET DA BANCA")
+        
+        print("⚠️  ATENÇÃO: Esta ação irá apagar todos os seus dados!")
+        confirm = self.get_input("Digite 'CONFIRMAR' para prosseguir", str, False)
+        
+        if confirm.upper() == 'CONFIRMAR':
+            user_id = self.current_user['id']
+            
+            # Remover todos os dados do usuário
+            self.db.data['balances'] = [b for b in self.db.data['balances'] if b['user_id'] != user_id]
+            self.db.data['transactions'] = [t for t in self.db.data['transactions'] if t['user_id'] != user_id]
+            self.db.data['goals'] = [g for g in self.db.data['goals'] if g['user_id'] != user_id]
+            
+            self.db.save_data()
+            print("✅ Banca resetada com sucesso!")
+        else:
+            print("❌ Reset cancelado.")
     
-    def handle_reset_balance(self):
-        session_id = self.get_session_id()
-        if session_id and session_id in self.sessions:
-            user_id = self.sessions[session_id]
-            self.db.reset_user_data(user_id)
-        self.redirect('/dashboard')
+    def main_menu(self):
+        """Menu principal após login"""
+        while True:
+            self.clear_screen()
+            self.show_dashboard()
+            
+            options = [
+                "Adicionar Saldo Diário",
+                "Adicionar Transação",
+                "Definir Meta",
+                "Ver Previsões",
+                "Ver Relatórios",
+                "Reset da Banca",
+                "Logout"
+            ]
+            
+            self.print_menu("MENU PRINCIPAL", options)
+            
+            try:
+                choice = int(input("Escolha uma opção: "))
+                
+                if choice == 0 or choice == 7:  # Logout
+                    self.current_user = None
+                    break
+                elif choice == 1:
+                    self.add_balance()
+                elif choice == 2:
+                    self.add_transaction()
+                elif choice == 3:
+                    self.add_goal()
+                elif choice == 4:
+                    self.show_forecast()
+                elif choice == 5:
+                    self.show_reports()
+                elif choice == 6:
+                    self.reset_bank()
+                else:
+                    print("❌ Opção inválida!")
+                
+                if choice != 0 and choice != 7:
+                    input("\nPressione Enter para continuar...")
+                    
+            except ValueError:
+                print("❌ Digite um número válido!")
+                input("Pressione Enter para continuar...")
     
-    def handle_logout(self):
-        session_id = self.get_session_id()
-        if session_id and session_id in self.sessions:
-            del self.sessions[session_id]
-        self.send_response(302)
-        self.send_header('Location', '/')
-        self.send_header('Set-Cookie', 'session_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT')
-        self.end_headers()
-    
-    def get_session_id(self):
-        cookie_header = self.headers.get('Cookie', '')
-        for cookie in cookie_header.split(';'):
-            if 'session_id=' in cookie:
-                return cookie.split('session_id=')[1].strip()
-        return None
-    
-    def redirect(self, location):
-        self.send_response(302)
-        self.send_header('Location', location)
-        self.end_headers()
-    
-    def serve_static_file(self, path):
-        self.send_error(404)
+    def run(self):
+        """Executa a aplicação"""
+        while True:
+            self.clear_screen()
+            
+            options = [
+                "Login",
+                "Registrar novo usuário"
+            ]
+            
+            self.print_menu("SISTEMA DE GERENCIAMENTO DE BANCA ESPORTIVA", options)
+            
+            try:
+                choice = int(input("Escolha uma opção: "))
+                
+                if choice == 0:  # Sair
+                    print("👋 Até logo!")
+                    break
+                elif choice == 1:  # Login
+                    if self.login():
+                        input("Pressione Enter para continuar...")
+                        self.main_menu()
+                elif choice == 2:  # Registro
+                    if self.register():
+                        input("Pressione Enter para continuar...")
+                else:
+                    print("❌ Opção inválida!")
+                    input("Pressione Enter para continuar...")
+                    
+            except ValueError:
+                print("❌ Digite um número válido!")
+                input("Pressione Enter para continuar...")
+            except KeyboardInterrupt:
+                print("\n👋 Até logo!")
+                break
 
-def run_server():
-    server_address = ('', 5000)
-    httpd = HTTPServer(server_address, WebHandler)
-    print("Servidor rodando em http://localhost:5000")
-    httpd.serve_forever()
-
-if __name__ == '__main__':
-    run_server()
+if __name__ == "__main__":
+    app = BankingCLI()
+    app.run()
