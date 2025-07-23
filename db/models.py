@@ -1,308 +1,294 @@
-# Nome do arquivo completo: db/models.py
+import json
+import os
+from datetime import datetime, date
+from typing import List, Dict, Optional, Any
 
-import sqlite3
-import click
-from flask import current_app, g
-from flask.cli import with_appcontext
-from typing import List, Dict
+class Database:
+    def __init__(self, db_path: str = 'data.json'):
+        self.db_path = db_path
+        self.data = self._load_data()
+    
+    def _load_data(self) -> Dict:
+        """Carrega dados do arquivo JSON ou cria estrutura inicial"""
+        if os.path.exists(self.db_path):
+            try:
+                with open(self.db_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, IOError):
+                pass
+        
+        # Estrutura inicial do banco de dados
+        return {
+            'users': [],
+            'balances': [],
+            'transactions': [],
+            'goals': []
+        }
+    
+    def _save_data(self):
+        """Salva dados no arquivo JSON"""
+        try:
+            with open(self.db_path, 'w', encoding='utf-8') as f:
+                json.dump(self.data, f, indent=2, ensure_ascii=False, default=str)
+        except IOError as e:
+            print(f"Erro ao salvar dados: {e}")
+    
+    def _get_next_id(self, table: str) -> int:
+        """Gera próximo ID para uma tabela"""
+        if not self.data[table]:
+            return 1
+        return max(item.get('id', 0) for item in self.data[table]) + 1
 
-# ---------------------- CONEXÃO E CONTEXTO ----------------------
+class User:
+    def __init__(self, db: Database):
+        self.db = db
+    
+    def create_user(self, username: str, password: str) -> bool:
+        """Cria um novo usuário"""
+        # Verifica se usuário já existe
+        if self.get_user_by_username(username):
+            return False
+        
+        user = {
+            'id': self.db._get_next_id('users'),
+            'username': username,
+            'password': password,  # Em produção, usar hash
+            'created_at': datetime.now().isoformat()
+        }
+        
+        self.db.data['users'].append(user)
+        self.db._save_data()
+        return True
+    
+    def get_user_by_username(self, username: str) -> Optional[Dict]:
+        """Busca usuário por nome"""
+        for user in self.db.data['users']:
+            if user['username'] == username:
+                return user
+        return None
+    
+    def validate_user(self, username: str, password: str) -> Optional[Dict]:
+        """Valida credenciais do usuário"""
+        user = self.get_user_by_username(username)
+        if user and user['password'] == password:
+            return user
+        return None
 
-def get_db():
-    """
-    Abre uma conexão com o banco de dados e a mantém em `g`.
-    """
-    if 'db' not in g:
-        g.db = sqlite3.connect(
-            current_app.config['DATABASE'],
-            detect_types=sqlite3.PARSE_DECLTYPES
-        )
-        g.db.row_factory = sqlite3.Row
-    return g.db
+class Balance:
+    def __init__(self, db: Database):
+        self.db = db
+    
+    def add_balance(self, user_id: int, date_str: str, amount: float, 
+                   deposits: float = 0, withdrawals: float = 0) -> bool:
+        """Adiciona ou atualiza saldo diário"""
+        try:
+            # Verifica se já existe saldo para esta data
+            existing = self.get_balance_by_date(user_id, date_str)
+            
+            if existing:
+                # Atualiza saldo existente
+                existing['amount'] = float(amount)
+                existing['deposits'] = float(deposits)
+                existing['withdrawals'] = float(withdrawals)
+                existing['updated_at'] = datetime.now().isoformat()
+            else:
+                # Cria novo saldo
+                balance = {
+                    'id': self.db._get_next_id('balances'),
+                    'user_id': user_id,
+                    'date': date_str,
+                    'amount': float(amount),
+                    'deposits': float(deposits),
+                    'withdrawals': float(withdrawals),
+                    'created_at': datetime.now().isoformat(),
+                    'updated_at': datetime.now().isoformat()
+                }
+                self.db.data['balances'].append(balance)
+            
+            self.db._save_data()
+            return True
+        except (ValueError, TypeError):
+            return False
+    
+    def get_balance_by_date(self, user_id: int, date_str: str) -> Optional[Dict]:
+        """Busca saldo por data"""
+        for balance in self.db.data['balances']:
+            if balance['user_id'] == user_id and balance['date'] == date_str:
+                return balance
+        return None
+    
+    def get_balances_by_user(self, user_id: int) -> List[Dict]:
+        """Busca todos os saldos de um usuário"""
+        balances = [b for b in self.db.data['balances'] if b['user_id'] == user_id]
+        return sorted(balances, key=lambda x: x['date'])
+    
+    def delete_balance(self, balance_id: int, user_id: int) -> bool:
+        """Remove um saldo"""
+        for i, balance in enumerate(self.db.data['balances']):
+            if balance['id'] == balance_id and balance['user_id'] == user_id:
+                del self.db.data['balances'][i]
+                self.db._save_data()
+                return True
+        return False
+    
+    def sync_balance_from_transactions(self, user_id: int, date_str: str):
+        """Sincroniza saldo baseado nas transações do dia"""
+        transactions = Transaction(self.db).get_transactions_by_date(user_id, date_str)
+        
+        total_deposits = sum(t['amount'] for t in transactions if t['type'] == 'deposit')
+        total_withdrawals = sum(t['amount'] for t in transactions if t['type'] == 'withdrawal')
+        
+        # Busca saldo anterior para calcular novo saldo
+        previous_balance = self.get_previous_balance(user_id, date_str)
+        base_amount = previous_balance['amount'] if previous_balance else 0
+        
+        new_amount = base_amount + total_deposits - total_withdrawals
+        
+        self.add_balance(user_id, date_str, new_amount, total_deposits, total_withdrawals)
+    
+    def get_previous_balance(self, user_id: int, date_str: str) -> Optional[Dict]:
+        """Busca o saldo do dia anterior"""
+        balances = self.get_balances_by_user(user_id)
+        previous = None
+        
+        for balance in balances:
+            if balance['date'] < date_str:
+                previous = balance
+            else:
+                break
+        
+        return previous
 
-def close_db(e=None):
-    """
-    Fecha a conexão armazenada em `g`, se existir.
-    """
-    db = g.pop('db', None)
-    if db is not None:
-        db.close()
+class Transaction:
+    def __init__(self, db: Database):
+        self.db = db
+    
+    def add_transaction(self, user_id: int, date_str: str, type_: str, 
+                       amount: float, description: str = '') -> bool:
+        """Adiciona uma nova transação"""
+        try:
+            transaction = {
+                'id': self.db._get_next_id('transactions'),
+                'user_id': user_id,
+                'date': date_str,
+                'type': type_,  # 'deposit' ou 'withdrawal'
+                'amount': float(amount),
+                'description': description,
+                'created_at': datetime.now().isoformat()
+            }
+            
+            self.db.data['transactions'].append(transaction)
+            self.db._save_data()
+            
+            # Atualiza saldo automaticamente
+            Balance(self.db).sync_balance_from_transactions(user_id, date_str)
+            
+            return True
+        except (ValueError, TypeError):
+            return False
+    
+    def get_transactions_by_user(self, user_id: int) -> List[Dict]:
+        """Busca todas as transações de um usuário"""
+        transactions = [t for t in self.db.data['transactions'] if t['user_id'] == user_id]
+        return sorted(transactions, key=lambda x: (x['date'], x['created_at']), reverse=True)
+    
+    def get_transactions_by_date(self, user_id: int, date_str: str) -> List[Dict]:
+        """Busca transações por data"""
+        return [t for t in self.db.data['transactions'] 
+                if t['user_id'] == user_id and t['date'] == date_str]
+    
+    def update_transaction(self, transaction_id: int, user_id: int, 
+                          date_str: str, type_: str, amount: float, 
+                          description: str = '') -> bool:
+        """Atualiza uma transação"""
+        try:
+            for transaction in self.db.data['transactions']:
+                if transaction['id'] == transaction_id and transaction['user_id'] == user_id:
+                    old_date = transaction['date']
+                    
+                    transaction['date'] = date_str
+                    transaction['type'] = type_
+                    transaction['amount'] = float(amount)
+                    transaction['description'] = description
+                    transaction['updated_at'] = datetime.now().isoformat()
+                    
+                    self.db._save_data()
+                    
+                    # Recalcula saldos das datas afetadas
+                    Balance(self.db).sync_balance_from_transactions(user_id, old_date)
+                    if old_date != date_str:
+                        Balance(self.db).sync_balance_from_transactions(user_id, date_str)
+                    
+                    return True
+            return False
+        except (ValueError, TypeError):
+            return False
+    
+    def delete_transaction(self, transaction_id: int, user_id: int) -> bool:
+        """Remove uma transação"""
+        for i, transaction in enumerate(self.db.data['transactions']):
+            if transaction['id'] == transaction_id and transaction['user_id'] == user_id:
+                date_str = transaction['date']
+                del self.db.data['transactions'][i]
+                self.db._save_data()
+                
+                # Recalcula saldo da data afetada
+                Balance(self.db).sync_balance_from_transactions(user_id, date_str)
+                
+                return True
+        return False
 
-# ---------------------- INICIALIZAÇÃO ----------------------
+class Goal:
+    def __init__(self, db: Database):
+        self.db = db
+    
+    def set_goal(self, user_id: int, target_amount: float) -> bool:
+        """Define ou atualiza meta do usuário"""
+        try:
+            # Remove meta anterior se existir
+            self.db.data['goals'] = [g for g in self.db.data['goals'] if g['user_id'] != user_id]
+            
+            goal = {
+                'id': self.db._get_next_id('goals'),
+                'user_id': user_id,
+                'target_amount': float(target_amount),
+                'created_at': datetime.now().isoformat(),
+                'updated_at': datetime.now().isoformat()
+            }
+            
+            self.db.data['goals'].append(goal)
+            self.db._save_data()
+            return True
+        except (ValueError, TypeError):
+            return False
+    
+    def get_goal(self, user_id: int) -> Optional[Dict]:
+        """Busca meta do usuário"""
+        for goal in self.db.data['goals']:
+            if goal['user_id'] == user_id:
+                return goal
+        return None
+    
+    def delete_goal(self, user_id: int) -> bool:
+        """Remove meta do usuário"""
+        initial_count = len(self.db.data['goals'])
+        self.db.data['goals'] = [g for g in self.db.data['goals'] if g['user_id'] != user_id]
+        
+        if len(self.db.data['goals']) < initial_count:
+            self.db._save_data()
+            return True
+        return False
 
 def init_db():
-    """
-    Cria todas as tabelas necessárias executando o script schema.sql.
-    """
-    db = get_db()
-    with current_app.open_resource('schema.sql') as f:
-        db.executescript(f.read().decode('utf8'))
+    """Inicializa o banco de dados"""
+    db = Database()
+    print("Banco de dados inicializado com sucesso!")
+    return db
 
-@click.command('init-db')
-@with_appcontext
-def init_db_command():
-    """
-    Comando `flask init-db` para (re)criar o esquema do banco.
-    """
-    init_db()
-    click.echo('Banco de dados inicializado.')
-
-def init_app(app):
-    """
-    Registra teardown e o comando CLI de inicialização.
-    """
-    app.teardown_appcontext(close_db)
-    app.cli.add_command(init_db_command)
-    with app.app_context():
-        init_db()
-
-# ---------------------- USER MANAGEMENT ----------------------
-
-def create_user(username: str, password: str) -> int:
-    """
-    Insere um novo usuário no banco. Retorna o id inserido.
-    """
-    db = get_db()
-    cursor = db.execute(
-        "INSERT INTO users (username, password) VALUES (?, ?)",
-        (username, password)
-    )
-    db.commit()
-    return cursor.lastrowid
-
-def get_user_by_username(username: str):
-    """
-    Retorna o usuário correspondente ao username, ou None.
-    """
-    db = get_db()
-    row = db.execute(
-        "SELECT * FROM users WHERE username = ?",
-        (username,)
-    ).fetchone()
-    return dict(row) if row else None
-
-# ---------------------- BALANCES (DAILY) ----------------------
-
-def fetch_all_balances(user_id: int) -> List[Dict]:
-    """
-    Retorna todos os saldos diários do usuário, em ordem cronológica.
-    """
-    db = get_db()
-    rows = db.execute(
-        "SELECT * FROM daily_balances WHERE user_id=? ORDER BY date ASC, id ASC",
-        (user_id,)
-    ).fetchall()
-    return [dict(r) for r in rows]
-
-def fetch_latest_per_day(user_id: int) -> List[Dict]:
-    """
-    Retorna um registro por dia (o mais recente daquele dia).
-    """
-    db = get_db()
-    rows = db.execute(
-        "SELECT * FROM daily_balances "
-        "WHERE user_id=? AND id IN ("
-        "  SELECT MAX(id) FROM daily_balances "
-        "  WHERE user_id=? GROUP BY date"
-        ") ORDER BY date ASC",
-        (user_id, user_id)
-    ).fetchall()
-    return [dict(r) for r in rows]
-
-def insert_balance(user_id: int, date: str, current_balance: float):
-    """
-    Insere um novo registro em daily_balances.
-    """
-    db = get_db()
-    db.execute(
-        "INSERT INTO daily_balances "
-        "(user_id, date, current_balance, deposits, profit, withdrawals, win_percentage) "
-        "VALUES (?,?,?,0,0,0,0)",
-        (user_id, date, current_balance)
-    )
-    db.commit()
-
-def update_balance(id: int, **fields):
-    """
-    Atualiza campos arbitrários em daily_balances.
-    Ex: update_balance(42, current_balance=100.0, profit=10.0)
-    """
-    cols = ','.join(f"{k}=:{k}" for k in fields)
-    params = dict(fields, id=id)
-    db = get_db()
-    db.execute(f"UPDATE daily_balances SET {cols} WHERE id=:id", params)
-    db.commit()
-
-def delete_balance(id: int):
-    """
-    Remove registro de daily_balances.
-    """
-    db = get_db()
-    db.execute("DELETE FROM daily_balances WHERE id=?", (id,))
-    db.commit()
-
-# ---------------------- TRANSACTIONS ----------------------
-
-def fetch_transactions(user_id: int) -> List[Dict]:
-    """
-    Retorna todas as transações do usuário, em ordem cronológica.
-    """
-    db = get_db()
-    rows = db.execute(
-        "SELECT * FROM transactions WHERE user_id=? ORDER BY date ASC",
-        (user_id,)
-    ).fetchall()
-    return [dict(r) for r in rows]
-
-def insert_transaction(user_id: int, date: str, type_: str, amount: float, ajustar: bool = True):
-    """
-    Insere uma transação.
-    """
-    db = get_db()
-    db.execute(
-        "INSERT INTO transactions (user_id, date, type, amount, ajustar_calculo) "
-        "VALUES (?,?,?,?,?)",
-        (user_id, date, type_, amount, 1 if ajustar else 0)
-    )
-    db.commit()
-
-def update_transaction(id: int, date: str, type_: str, amount: float):
-    """
-    Atualiza uma transação existente.
-    """
-    db = get_db()
-    db.execute(
-        "UPDATE transactions SET date=?, type=?, amount=? WHERE id=?",
-        (date, type_, amount, id)
-    )
-    db.commit()
-
-def delete_transaction(id: int):
-    """
-    Remove transação.
-    """
-    db = get_db()
-    db.execute("DELETE FROM transactions WHERE id=?", (id,))
-    db.commit()
-
-# ---------------------- TRANSACTION AUX ----------------------
-
-def fetch_transaction_by_id(trans_id: int, user_id: int) -> Dict:
-    """
-    Retorna transação pelo id e usuário, ou None.
-    """
-    db = get_db()
-    row = db.execute(
-        "SELECT * FROM transactions WHERE id=? AND user_id=?",
-        (trans_id, user_id)
-    ).fetchone()
-    return dict(row) if row else None
-
-# ---------------------- USER META ----------------------
-
-def fetch_meta(user_id: int) -> float:
-    """
-    Retorna a meta do usuário ou 0.0 se não existir.
-    """
-    db = get_db()
-    row = db.execute(
-        "SELECT target FROM user_meta WHERE user_id=?",
-        (user_id,)
-    ).fetchone()
-    return row['target'] if row else 0.0
-
-def upsert_meta(user_id: int, target: float):
-    """
-    Insere ou atualiza a meta do usuário.
-    """
-    db = get_db()
-    if db.execute("SELECT 1 FROM user_meta WHERE user_id=?", (user_id,)).fetchone():
-        db.execute("UPDATE user_meta SET target=? WHERE user_id=?", (target, user_id))
-    else:
-        db.execute("INSERT INTO user_meta (user_id,target) VALUES (?,?)", (user_id, target))
-    db.commit()
-
-# ---------------------- SALDO DIÁRIO AUXILIARES ----------------------
-
-def fetch_balance_on_date(user_id: int, date: str) -> Dict:
-    """
-    Retorna registro de daily_balance para aquele usuário e data, ou None.
-    """
-    db = get_db()
-    row = db.execute(
-        "SELECT * FROM daily_balances WHERE user_id=? AND date=?",
-        (user_id, date)
-    ).fetchone()
-    return dict(row) if row else None
-
-def fetch_balance_by_id(balance_id: int, user_id: int) -> Dict:
-    """
-    Retorna um registro de daily_balances pelo id e usuário.
-    """
-    db = get_db()
-    row = db.execute(
-        "SELECT * FROM daily_balances WHERE id=? AND user_id=?",
-        (balance_id, user_id)
-    ).fetchone()
-    return dict(row) if row else None
-
-def recalc_balance_for_date(user_id: int, date: str):
-    """
-    Recalcula deposits, withdrawals, profit e win_percentage para a data dada.
-    Corrigido para garantir cálculos precisos.
-    """
-    db = get_db()
-    bal = fetch_balance_on_date(user_id, date)
-    if not bal:
-        return
-    
-    # Calcula depósitos e saques do dia (apenas transações que afetam o cálculo)
-    dep = db.execute(
-        "SELECT SUM(amount) as total FROM transactions WHERE user_id=? AND type='deposit' AND date=? AND ajustar_calculo=1",
-        (user_id, date)
-    ).fetchone()['total'] or 0.0
-    
-    wdr = db.execute(
-        "SELECT SUM(amount) as total FROM transactions WHERE user_id=? AND type='withdrawal' AND date=? AND ajustar_calculo=1",
-        (user_id, date)
-    ).fetchone()['total'] or 0.0
-    
-    # Busca o saldo do dia anterior
-    prev = db.execute(
-        "SELECT current_balance FROM daily_balances WHERE user_id=? AND date<? ORDER BY date DESC, id DESC LIMIT 1",
-        (user_id, date)
-    ).fetchone()
-    prev_bal = prev['current_balance'] if prev else 0.0
-    
-    # Calcula o lucro: (saldo_atual + saques) - (saldo_anterior + depósitos)
-    profit = round((bal['current_balance'] + wdr) - (prev_bal + dep), 2)
-    
-    # Calcula percentual de vitória
-    win_pct = round((profit / dep * 100), 2) if dep > 0 else 0.0
-    
-    # Atualiza o registro
-    db.execute(
-        "UPDATE daily_balances SET deposits=?, withdrawals=?, profit=?, win_percentage=? WHERE id=?",
-        (dep, wdr, profit, win_pct, bal['id'])
-    )
-    db.commit()
-
-def get_current_balance(user_id: int) -> float:
-    """
-    Retorna o saldo atual considerando último registro diário e transações posteriores.
-    """
-    db = get_db()
-    last = db.execute(
-        "SELECT current_balance, date FROM daily_balances WHERE user_id=? ORDER BY date DESC, id DESC LIMIT 1",
-        (user_id,)
-    ).fetchone()
-    if not last:
-        return 0.0
-    base_balance, base_date = last['current_balance'], last['date']
-    rows = db.execute(
-        "SELECT type, amount FROM transactions WHERE user_id=? AND date>?",
-        (user_id, base_date)
-    ).fetchall()
-    dep = sum(r['amount'] for r in rows if r['type']=='deposit')
-    wdr = sum(r['amount'] for r in rows if r['type']=='withdrawal')
-    return round(base_balance + dep - wdr, 2)
+def reset_db():
+    """Reseta o banco de dados"""
+    if os.path.exists('data.json'):
+        os.remove('data.json')
+    db = Database()
+    print("Banco de dados resetado com sucesso!")
+    return db
