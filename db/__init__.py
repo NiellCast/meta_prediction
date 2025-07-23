@@ -1,25 +1,17 @@
-import sqlite3
-from flask import current_app, g
+# JSON-based database initialization
+# This module provides database functionality without SQLite dependencies
+
+def init_app(app=None):
+    """Initialize database for the application"""
+    # No initialization needed for JSON-based storage
+    pass
 
 def get_db():
-    if 'db' not in g:
-        g.db = sqlite3.connect(current_app.config['DATABASE'], detect_types=sqlite3.PARSE_DECLTYPES)
-        g.db.row_factory = sqlite3.Row
-    return g.db
+    """Get database instance - compatibility function"""
+    from .models import Database
+    return Database()
 
 def close_db(e=None):
-    db = g.pop('db', None)
-    if db: db.close()
-
-def init_app(app):
-    from flask.cli import with_appcontext
-    import click
-
-    app.teardown_appcontext(close_db)
-    @click.command('init-db')
-    @with_appcontext
-    def init_db_command():
-        with current_app.open_resource('schema.sql') as f:
-            get_db().executescript(f.read().decode())
-        click.echo('Initialized database.')
-    app.cli.add_command(init_db_command)
+    """Close database connection - compatibility function"""
+    # No connection to close for JSON-based storage
+    pass
