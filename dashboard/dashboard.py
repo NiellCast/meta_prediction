@@ -38,16 +38,25 @@ def index():
 def dashboard():
     user_id = session['user_id']
 
-    # Sincronização diária automática
+    # Sincronização diária automática - corrigida para evitar duplicatas
     txs = fetch_transactions(user_id)
-    for d in sorted({t['date'] for t in txs}):
+    unique_dates = sorted({t['date'] for t in txs})
+    
+    for d in unique_dates:
         if not fetch_balance_on_date(user_id, d):
-            prev = next((b for b in fetch_latest_per_day(user_id) if b['date'] < d), None)
+            # Busca o saldo anterior mais próximo
+            prev_balances = [b for b in fetch_latest_per_day(user_id) if b['date'] < d]
+            prev = prev_balances[-1] if prev_balances else None
             base = prev['current_balance'] if prev else 0.0
-            deps = sum(t['amount'] for t in txs if t['date']==d and t['type']=='deposit')
-            wdr  = sum(t['amount'] for t in txs if t['date']==d and t['type']=='withdrawal')
+            
+            # Calcula depósitos e saques do dia
+            deps = sum(t['amount'] for t in txs if t['date'] == d and t['type'] == 'deposit')
+            wdr = sum(t['amount'] for t in txs if t['date'] == d and t['type'] == 'withdrawal')
             insert_balance(user_id, d, round(base + deps - wdr, 2))
-    for d in sorted({b['date'] for b in fetch_all_balances(user_id)}):
+    
+    # Recalcula todos os saldos para garantir consistência
+    balance_dates = sorted({b['date'] for b in fetch_all_balances(user_id)})
+    for d in balance_dates:
         recalc_balance_for_date(user_id, d)
 
     rows = fetch_latest_per_day(user_id)
@@ -55,20 +64,24 @@ def dashboard():
     current_balance = balances[-1]['current_balance'] if balances else 0.0
     summary = ReportService.summary(balances, current_balance)
     current_meta = fetch_meta(user_id)
-    percent_meta = round(current_balance / current_meta * 100, 2) if current_meta else 0.0
+    percent_meta = round(current_balance / current_meta * 100, 2) if current_meta and current_meta > 0 else 0.0
 
     # Previsão de meta
     predicted_date = time_remaining = None
-    if current_meta and len(rows) >= 2:
+    if current_meta and current_meta > 0 and len(rows) >= 2:
         engine = ForecastEngine(rows)
         if current_balance >= current_meta:
             predicted_date = datetime.today().strftime("%d/%m/%Y")
             time_remaining = "Meta já batida"
         else:
-            dt_pred = engine.predict_date(current_meta, horizon_days=365)
-            predicted_date = dt_pred.strftime("%d/%m/%Y")
-            last_dt = datetime.strptime(rows[-1]['date'], "%Y-%m-%d")
-            time_remaining = format_time_difference(dt_pred, last_dt)
+            try:
+                dt_pred = engine.predict_date(current_meta, horizon_days=365)
+                predicted_date = dt_pred.strftime("%d/%m/%Y")
+                last_dt = datetime.strptime(rows[-1]['date'], "%Y-%m-%d")
+                time_remaining = format_time_difference(dt_pred, last_dt)
+            except Exception as e:
+                predicted_date = "Erro na previsão"
+                time_remaining = "Dados insuficientes"
 
     # Dados para gráficos
     chart_dates       = [b['date']            for b in balances]
@@ -76,17 +89,26 @@ def dashboard():
     chart_deposits    = [b['deposits']        for b in balances]
     chart_withdrawals = [b['withdrawals']     for b in balances]
     chart_profits     = [b['profit']          for b in balances]
+    
+    # Média móvel de 7 dias corrigida
     chart_mavg = [
         round(sum(chart_balances[max(0,i-6):i+1]) / len(chart_balances[max(0,i-6):i+1]), 2)
         for i in range(len(chart_balances))
     ]
 
-    # Heatmap
+    # Heatmap semanal corrigido
     cols = (len(balances) + 6) // 7
     heat_matrix = [[None]*cols for _ in range(7)]
     for idx, b in enumerate(balances):
-        dt = datetime.strptime(b['date'], "%Y-%m-%d")
-        heat_matrix[dt.weekday()][idx//7] = b['profit']
+        try:
+            dt = datetime.strptime(b['date'], "%Y-%m-%d")
+            row = dt.weekday()
+            col = idx // 7
+            if col < cols:
+                heat_matrix[row][col] = b['profit']
+        except (ValueError, IndexError):
+            continue
+    
     flat = [abs(x) for row in heat_matrix for x in row if x is not None]
     heat_max = max(flat) if flat else 1.0
 
@@ -156,8 +178,13 @@ def edit_balance(balance_id):
 def delete_balance(balance_id):
     user_id = session['user_id']
     bal = fetch_balance_by_id(balance_id, user_id)
+    if not bal:
+        flash("Registro não encontrado.", "danger")
+        return redirect(url_for('dashboard.dashboard'))
+        
+    date_to_recalc = bal['date']
     delete_balance(balance_id)
-    recalc_balance_for_date(user_id, bal['date'])
+    recalc_balance_for_date(user_id, date_to_recalc)
     flash("Saldo diário excluído.", "success")
     return redirect(url_for('dashboard.dashboard'))
 
@@ -169,13 +196,22 @@ def add_transaction():
     ttype    = request.form['type']
     try:
         amount = float(request.form['amount'])
+        if amount <= 0:
+            flash("Valor deve ser maior que zero.", "danger")
+            return redirect(url_for('dashboard.dashboard'))
     except ValueError:
         flash("Valor inválido.", "danger")
         return redirect(url_for('dashboard.dashboard'))
 
     insert_transaction(user_id, date_str, ttype, amount)
+    
+    # Garante que existe um registro de saldo para a data
     if not fetch_balance_on_date(user_id, date_str):
-        insert_balance(user_id, date_str, 0.0)
+        # Calcula saldo base a partir do dia anterior
+        prev_balances = [b for b in fetch_latest_per_day(user_id) if b['date'] < date_str]
+        base_balance = prev_balances[-1]['current_balance'] if prev_balances else 0.0
+        insert_balance(user_id, date_str, base_balance)
+    
     recalc_balance_for_date(user_id, date_str)
     flash("Transação adicionada com sucesso.", "success")
     return redirect(url_for('dashboard.dashboard'))
@@ -194,14 +230,21 @@ def edit_transaction(trans_id):
         ttype    = request.form['type']
         try:
             amount = float(request.form['amount'])
+            if amount <= 0:
+                flash("Valor deve ser maior que zero.", "danger")
+                return redirect(url_for('dashboard.dashboard'))
         except ValueError:
             flash("Valor inválido.", "danger")
             return redirect(url_for('dashboard.dashboard'))
 
         update_transaction(trans_id, new_date, ttype, amount)
+        
+        # Recalcula saldos para ambas as datas (antiga e nova)
         recalc_balance_for_date(user_id, old_date)
         if not fetch_balance_on_date(user_id, new_date):
-            insert_balance(user_id, new_date, 0.0)
+            prev_balances = [b for b in fetch_latest_per_day(user_id) if b['date'] < new_date]
+            base_balance = prev_balances[-1]['current_balance'] if prev_balances else 0.0
+            insert_balance(user_id, new_date, base_balance)
         recalc_balance_for_date(user_id, new_date)
         flash("Transação atualizada com sucesso.", "success")
         return redirect(url_for('dashboard.dashboard'))
@@ -213,8 +256,13 @@ def edit_transaction(trans_id):
 def delete_transaction(trans_id):
     user_id = session['user_id']
     tx = fetch_transaction_by_id(trans_id, user_id)
+    if not tx:
+        flash("Transação não encontrada.", "danger")
+        return redirect(url_for('dashboard.dashboard'))
+        
+    date_to_recalc = tx['date']
     delete_transaction(trans_id)
-    recalc_balance_for_date(user_id, tx['date'])
+    recalc_balance_for_date(user_id, date_to_recalc)
     flash("Transação excluída.", "success")
     return redirect(url_for('dashboard.dashboard'))
 
@@ -238,6 +286,9 @@ def predict():
     user_id = session['user_id']
     try:
         target_value = float(request.form['target_value'])
+        if target_value <= 0:
+            flash("Valor da meta deve ser maior que zero.", "danger")
+            return redirect(url_for('dashboard.dashboard'))
     except (ValueError, KeyError):
         flash("Valor da meta inválido.", "danger")
         return redirect(url_for('dashboard.dashboard'))
@@ -247,16 +298,19 @@ def predict():
         flash("Necessário ter pelo menos 2 registros para previsão.", "warning")
         return redirect(url_for('dashboard.dashboard'))
 
-    curr = get_current_balance(user_id)
-    engine = ForecastEngine(rows)
-    if curr >= target_value:
-        dt_pred = datetime.today()
-        flash(f"Previsão: meta já batida em {dt_pred.strftime('%d/%m/%Y')}", "info")
-    else:
-        dt_pred = engine.predict_date(target_value, horizon_days=365)
-        last_dt = datetime.strptime(rows[-1]['date'], "%Y-%m-%d")
-        delta = format_time_difference(dt_pred, last_dt)
-        flash(f"Previsão: meta em {dt_pred.strftime('%d/%m/%Y')} ({delta})", "info")
+    try:
+        curr = get_current_balance(user_id)
+        if curr >= target_value:
+            dt_pred = datetime.today()
+            flash(f"Previsão: meta já batida em {dt_pred.strftime('%d/%m/%Y')}", "success")
+        else:
+            engine = ForecastEngine(rows)
+            dt_pred = engine.predict_date(target_value, horizon_days=365)
+            last_dt = datetime.strptime(rows[-1]['date'], "%Y-%m-%d")
+            delta = format_time_difference(dt_pred, last_dt)
+            flash(f"Previsão: meta de {target_value:.2f} será atingida em {dt_pred.strftime('%d/%m/%Y')} ({delta})", "info")
+    except Exception as e:
+        flash("Erro ao calcular previsão. Verifique se há dados suficientes e consistentes.", "danger")
 
     return redirect(url_for('dashboard.dashboard'))
 

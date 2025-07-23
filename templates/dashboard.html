@@ -27,13 +27,30 @@
     </div>
   </div>
 
+  <div class="card mb-4">
+    <div class="card-body">
+      <h5 class="card-title">Previsão de Meta</h5>
+      <form action="{{ url_for('dashboard.predict') }}" method="post" class="row g-2 align-items-end">
+        <div class="col-auto">
+          <label for="target_value" class="col-form-label">Valor da Meta (R$):</label>
+        </div>
+        <div class="col-auto">
+          <input type="number" step="0.01" class="form-control" id="target_value" name="target_value" placeholder="Ex: 10000.00" required>
+        </div>
+        <div class="col-auto">
+          <button type="submit" class="btn btn-info">Calcular Previsão</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <!-- Atualizar Meta -->
   <form action="{{ url_for('dashboard.update_meta') }}" method="post" class="row g-2 align-items-end mb-4">
     <div class="col-auto">
       <label for="meta" class="col-form-label">Meta (R$):</label>
     </div>
     <div class="col-auto">
-      <input type="text" class="form-control" id="meta" name="meta" placeholder="Insira nova meta">
+      <input type="number" step="0.01" class="form-control" id="meta" name="meta" placeholder="Insira nova meta" value="{{ current_meta if current_meta else '' }}">
     </div>
     <div class="col-auto">
       <button type="submit" class="btn btn-success">Atualizar Meta</button>
@@ -50,7 +67,7 @@
         </div>
         <div class="mb-3">
           <label>Saldo Atual</label>
-          <input type="text" name="current_balance" class="form-control" required>
+          <input type="number" step="0.01" name="current_balance" class="form-control" placeholder="Ex: 1500.00" required>
         </div>
         <button type="submit" class="btn btn-primary">Adicionar Saldo Diário</button>
       </form>
@@ -72,7 +89,7 @@
         </div>
         <div class="mb-3">
           <label>Valor</label>
-          <input type="text" name="amount" class="form-control" required>
+          <input type="number" step="0.01" name="amount" class="form-control" placeholder="Ex: 100.00" required>
         </div>
         <button type="submit" class="btn btn-primary">Adicionar Transação</button>
       </form>
@@ -149,6 +166,44 @@
     </div>
   </div>
 
+  <!-- Heatmap Semanal -->
+  <div class="card mb-4">
+    <div class="card-body">
+      <h5 class="card-title">Heatmap de Performance Semanal</h5>
+      <div class="table-responsive">
+        <table class="table table-bordered text-center">
+          <thead>
+            <tr>
+              <th>Dia</th>
+              {% for col in range((display_history|length + 6) // 7) %}
+              <th>Sem {{ col + 1 }}</th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% set days = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'] %}
+            {% for day_idx in range(7) %}
+            <tr>
+              <td><strong>{{ days[day_idx] }}</strong></td>
+              {% for col in range((display_history|length + 6) // 7) %}
+              <td style="
+                {% if heat_matrix[day_idx][col] is not none %}
+                  background-color: {% if heat_matrix[day_idx][col] >= 0 %}rgba(40, 167, 69, {{ (heat_matrix[day_idx][col] / heat_max * 0.8) if heat_max > 0 else 0 }}){% else %}rgba(220, 53, 69, {{ (heat_matrix[day_idx][col]|abs / heat_max * 0.8) if heat_max > 0 else 0 }}){% endif %};
+                {% endif %}
+              ">
+                {% if heat_matrix[day_idx][col] is not none %}
+                  {{ heat_matrix[day_idx][col]|currency }}
+                {% endif %}
+              </td>
+              {% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
   <!-- Gráficos de Linha -->
   <div class="row">
     <div class="col-md-6 mb-4">
@@ -156,8 +211,8 @@
       <canvas id="balanceChart"></canvas>
     </div>
     <div class="col-md-6 mb-4">
-      <h5>Lucro Diário Acumulado</h5>
-      <canvas id="accumProfitChart"></canvas>
+      <h5>Lucro Diário</h5>
+      <canvas id="profitChart"></canvas>
     </div>
     <div class="col-md-6 mb-4">
       <h5>Depósitos</h5>
@@ -179,20 +234,99 @@
   const profits     = {{ chart_profits|tojson }};
   const mavg        = {{ chart_mavg|tojson }};
 
+  // Configuração comum para gráficos
+  const commonOptions = {
+    responsive: true,
+    plugins: {
+      legend: {
+        position: 'top',
+      }
+    },
+    scales: {
+      y: {
+        beginAtZero: false
+      }
+    }
+  };
+
   new Chart(document.getElementById('balanceChart'), {
     type: 'line',
-    data: { labels: dates, datasets:[{ label:'Saldo Atual', data:balances, fill:false, tension:0.1 }] }
+    data: { 
+      labels: dates, 
+      datasets: [
+        { 
+          label: 'Saldo Atual', 
+          data: balances, 
+          borderColor: 'rgb(75, 192, 192)',
+          backgroundColor: 'rgba(75, 192, 192, 0.2)',
+          fill: false, 
+          tension: 0.1 
+        },
+        { 
+          label: 'Média Móvel 7 dias', 
+          data: mavg, 
+          borderColor: 'rgb(255, 99, 132)',
+          backgroundColor: 'rgba(255, 99, 132, 0.2)',
+          fill: false, 
+          tension: 0.1,
+          borderDash: [5, 5]
+        }
+      ]
+    },
+    options: commonOptions
   });
-  new Chart(document.getElementById('accumProfitChart'), {
+  
+  new Chart(document.getElementById('profitChart'), {
     type: 'line',
-    data: { labels: dates, datasets:[{ label:'Lucro Acumulado', data:profits, fill:false, tension:0.1 }] }
+    data: { 
+      labels: dates, 
+      datasets: [
+        { 
+          label: 'Lucro Diário', 
+          data: profits, 
+          borderColor: 'rgb(54, 162, 235)',
+          backgroundColor: 'rgba(54, 162, 235, 0.2)',
+          fill: false, 
+          tension: 0.1 
+        }
+      ]
+    },
+    options: commonOptions
   });
+  
   new Chart(document.getElementById('depositChart'), {
     type: 'line',
-    data: { labels: dates, datasets:[{ label:'Depósitos', data:deposits, fill:false, tension:0.1 }] }
+    data: { 
+      labels: dates, 
+      datasets: [
+        { 
+          label: 'Depósitos', 
+          data: deposits, 
+          borderColor: 'rgb(255, 205, 86)',
+          backgroundColor: 'rgba(255, 205, 86, 0.2)',
+          fill: true, 
+          tension: 0.1 
+        }
+      ]
+    },
+    options: commonOptions
   });
+  
   new Chart(document.getElementById('withdrawalChart'), {
     type: 'line',
-    data: { labels: dates, datasets:[{ label:'Saques', data:withdrawals, fill:false, tension:0.1 }] }
+    data: { 
+      labels: dates, 
+      datasets: [
+        { 
+          label: 'Saques', 
+          data: withdrawals, 
+          borderColor: 'rgb(153, 102, 255)',
+          backgroundColor: 'rgba(153, 102, 255, 0.2)',
+          fill: true, 
+          tension: 0.1 
+        }
+      ]
+    },
+    options: commonOptions
   });
 </script>

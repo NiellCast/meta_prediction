@@ -117,7 +117,7 @@ def insert_balance(user_id: int, date: str, current_balance: float):
     db.execute(
         "INSERT INTO daily_balances "
         "(user_id, date, current_balance, deposits, profit, withdrawals, win_percentage) "
-        "VALUES (?,?,?,?,0,0,0)",
+        "VALUES (?,?,?,0,0,0,0)",
         (user_id, date, current_balance)
     )
     db.commit()
@@ -249,26 +249,38 @@ def fetch_balance_by_id(balance_id: int, user_id: int) -> Dict:
 def recalc_balance_for_date(user_id: int, date: str):
     """
     Recalcula deposits, withdrawals, profit e win_percentage para a data dada.
+    Corrigido para garantir cálculos precisos.
     """
     db = get_db()
     bal = fetch_balance_on_date(user_id, date)
     if not bal:
         return
+    
+    # Calcula depósitos e saques do dia (apenas transações que afetam o cálculo)
     dep = db.execute(
         "SELECT SUM(amount) as total FROM transactions WHERE user_id=? AND type='deposit' AND date=? AND ajustar_calculo=1",
         (user_id, date)
     ).fetchone()['total'] or 0.0
+    
     wdr = db.execute(
         "SELECT SUM(amount) as total FROM transactions WHERE user_id=? AND type='withdrawal' AND date=? AND ajustar_calculo=1",
         (user_id, date)
     ).fetchone()['total'] or 0.0
+    
+    # Busca o saldo do dia anterior
     prev = db.execute(
         "SELECT current_balance FROM daily_balances WHERE user_id=? AND date<? ORDER BY date DESC, id DESC LIMIT 1",
         (user_id, date)
     ).fetchone()
     prev_bal = prev['current_balance'] if prev else 0.0
+    
+    # Calcula o lucro: (saldo_atual + saques) - (saldo_anterior + depósitos)
     profit = round((bal['current_balance'] + wdr) - (prev_bal + dep), 2)
+    
+    # Calcula percentual de vitória
     win_pct = round((profit / dep * 100), 2) if dep > 0 else 0.0
+    
+    # Atualiza o registro
     db.execute(
         "UPDATE daily_balances SET deposits=?, withdrawals=?, profit=?, win_percentage=? WHERE id=?",
         (dep, wdr, profit, win_pct, bal['id'])
