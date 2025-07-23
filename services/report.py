@@ -2,188 +2,139 @@
 Serviço de relatórios e métricas
 Versão simplificada usando apenas bibliotecas padrão do Python
 """
-import sqlite3
 from datetime import datetime, timedelta
-import json
 
 class ReportService:
-    def __init__(self, db_path='database.db'):
-        self.db_path = db_path
+    def __init__(self):
+        pass
     
-    def get_performance_metrics(self, user_id, days=30):
-        """
-        Calcula métricas de performance dos últimos N dias
-        """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Buscar dados dos últimos N dias
-        cursor.execute('''
-            SELECT date, profit, balance 
-            FROM daily_balances 
-            WHERE user_id = ? 
-            ORDER BY date DESC 
-            LIMIT ?
-        ''', (user_id, days))
-        
-        data = cursor.fetchall()
-        conn.close()
-        
-        if not data:
-            return {
-                'daily_profit': 0,
-                'accumulated_profit': 0,
-                'win_rate': 0,
-                'total_days': 0,
-                'profitable_days': 0
-            }
-        
-        # Calcular métricas
-        daily_profit = sum(row[1] for row in data if row[1])
-        accumulated_profit = data[0][2] - data[-1][2] if len(data) > 1 else 0
-        profitable_days = sum(1 for row in data if row[1] and row[1] > 0)
-        total_days = len(data)
-        win_rate = (profitable_days / total_days * 100) if total_days > 0 else 0
-        
+    def generate_performance_report(self, user_id):
+        """Gera relatório de performance básico"""
+        # Esta função será chamada com dados já carregados
+        # Retorna estrutura básica para compatibilidade
         return {
-            'daily_profit': daily_profit,
-            'accumulated_profit': accumulated_profit,
-            'win_rate': round(win_rate, 2) if win_rate is not None else 0,
-            'total_days': total_days,
-            'profitable_days': profitable_days
+            'initial_balance': 0,
+            'current_balance': 0,
+            'profit_loss': 0,
+            'profit_percentage': 0,
+            'total_days': 0
         }
     
-    def get_chart_data(self, user_id, days=30):
-        """
-        Retorna dados formatados para gráficos
-        """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+    def generate_transactions_summary(self, user_id):
+        """Gera resumo de transações"""
+        return {
+            'total_deposits': 0,
+            'total_withdrawals': 0,
+            'transaction_count': 0
+        }
+    
+    @staticmethod
+    def calculate_performance_from_data(balances, transactions):
+        """Calcula métricas de performance a partir dos dados"""
+        if not balances:
+            return {
+                'initial_balance': 0,
+                'current_balance': 0,
+                'profit_loss': 0,
+                'profit_percentage': 0,
+                'total_days': 0
+            }
         
-        cursor.execute('''
-            SELECT date, balance, deposits, withdrawals, profit
-            FROM daily_balances 
-            WHERE user_id = ? 
-            ORDER BY date ASC 
-            LIMIT ?
-        ''', (user_id, days))
+        initial_balance = balances[0]['amount']
+        current_balance = balances[-1]['amount']
+        profit_loss = current_balance - initial_balance
+        profit_percentage = (profit_loss / initial_balance * 100) if initial_balance > 0 else 0
         
-        data = cursor.fetchall()
-        conn.close()
+        return {
+            'initial_balance': initial_balance,
+            'current_balance': current_balance,
+            'profit_loss': profit_loss,
+            'profit_percentage': round(profit_percentage, 2),
+            'total_days': len(balances)
+        }
+    
+    @staticmethod
+    def calculate_transactions_summary(transactions):
+        """Calcula resumo das transações"""
+        total_deposits = sum(t['amount'] for t in transactions if t['type'] == 'deposit')
+        total_withdrawals = sum(t['amount'] for t in transactions if t['type'] == 'withdrawal')
         
-        # Calcular dados para gráfico
-        chart_data = []
-        try:
-            for row in data:
-                chart_data.append({
-                    'date': row[0],
-                    'balance': float(row[1]) if row[1] is not None else 0,
-                    'deposits': float(row[2]) if row[2] is not None else 0,
-                    'withdrawals': float(row[3]) if row[3] is not None else 0,
-                    'profit': float(row[4]) if row[4] is not None else 0
-                })
-        except (ValueError, TypeError) as e:
-            print(f"Erro ao processar dados do gráfico: {e}")
+        return {
+            'total_deposits': total_deposits,
+            'total_withdrawals': total_withdrawals,
+            'transaction_count': len(transactions)
+        }
+    
+    @staticmethod
+    def get_chart_data(balances, days=30):
+        """Retorna dados formatados para gráficos"""
+        if not balances:
             return []
+        
+        # Limitar aos últimos N dias
+        recent_balances = balances[-days:] if len(balances) > days else balances
+        
+        chart_data = []
+        for balance in recent_balances:
+            chart_data.append({
+                'date': balance['date'],
+                'amount': balance['amount'],
+                'deposits': balance.get('deposits', 0),
+                'withdrawals': balance.get('withdrawals', 0)
+            })
         
         return chart_data
     
-    def get_heatmap_data(self, user_id):
-        """
-        Gera dados para heatmap de performance (últimas 4 semanas)
-        """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+    @staticmethod
+    def calculate_win_rate(balances):
+        """Calcula taxa de vitória baseada no crescimento diário"""
+        if len(balances) < 2:
+            return 0
         
-        # Buscar dados dos últimos 28 dias
-        cursor.execute('''
-            SELECT date, profit
-            FROM daily_balances 
-            WHERE user_id = ? AND date >= date('now', '-28 days')
-            ORDER BY date ASC
-        ''', (user_id,))
+        winning_days = 0
+        total_days = len(balances) - 1
         
-        data = cursor.fetchall()
-        conn.close()
+        for i in range(1, len(balances)):
+            if balances[i]['amount'] > balances[i-1]['amount']:
+                winning_days += 1
         
-        # Organizar dados por data
-        daily_profits = {row[0]: row[1] for row in data}
-        current_date = datetime.now()
-        
-        # Criar matriz 7x4 (4 semanas)
-        heatmap_data = []
-        try:
-            for week in range(4):
-                week_data = []
-                for day in range(7):
-                    date_key = (current_date - timedelta(days=(3-week)*7 + (6-day))).strftime('%Y-%m-%d')
-                    profit = daily_profits.get(date_key, 0)
-                    
-                    # Classificar performance
-                    if profit > 100:
-                        intensity = 'high'
-                    elif profit > 0:
-                        intensity = 'medium'
-                    elif profit == 0:
-                        intensity = 'neutral'
-                    else:
-                        intensity = 'low'
-                    
-                    week_data.append({
-                        'date': date_key,
-                        'profit': float(profit) if profit is not None else 0,
-                        'intensity': intensity
-                    })
-                heatmap_data.append(week_data)
-        except Exception as e:
-            print(f"Erro ao gerar heatmap: {e}")
-            return []
-        
-        return heatmap_data
+        return round((winning_days / total_days * 100), 2) if total_days > 0 else 0
     
-    def get_simple_stats(self, user_id):
-        """Obtém estatísticas básicas simplificadas"""
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # Estatísticas básicas
-            cursor.execute('''
-                SELECT 
-                    COUNT(*) as total_days,
-                    SUM(CASE WHEN profit > 0 THEN 1 ELSE 0 END) as profitable_days,
-                    AVG(balance) as avg_balance,
-                    MAX(balance) as max_balance,
-                    MIN(balance) as min_balance,
-                    SUM(profit) as total_profit
-                FROM daily_balances 
-                WHERE user_id = ?
-            ''', (user_id,))
-            
-            result = cursor.fetchone()
-            conn.close()
-            
-            if result and result[0] > 0:
-                return {
-                    'total_days': result[0],
-                    'profitable_days': result[1] or 0,
-                    'win_rate': round((result[1] or 0) / result[0] * 100, 2),
-                    'avg_balance': round(result[2] or 0, 2),
-                    'max_balance': round(result[3] or 0, 2),
-                    'min_balance': round(result[4] or 0, 2),
-                    'total_profit': round(result[5] or 0, 2)
-                }
-            else:
-                return {
-                    'total_days': 0,
-                    'profitable_days': 0,
-                    'win_rate': 0,
-                    'avg_balance': 0,
-                    'max_balance': 0,
-                    'min_balance': 0,
-                    'total_profit': 0
-                }
-                
-        except Exception as e:
-            print(f"Erro ao obter estatísticas: {e}")
-            return None
+    @staticmethod
+    def get_weekly_stats(balances):
+        """Obtém estatísticas semanais"""
+        if not balances:
+            return {
+                'weekly_growth': 0,
+                'best_day': None,
+                'worst_day': None
+            }
+        
+        # Calcular crescimento semanal (últimos 7 dias)
+        if len(balances) >= 7:
+            week_start = balances[-7]['amount']
+            week_end = balances[-1]['amount']
+            weekly_growth = week_end - week_start
+        else:
+            weekly_growth = 0
+        
+        # Encontrar melhor e pior dia
+        daily_changes = []
+        for i in range(1, len(balances)):
+            change = balances[i]['amount'] - balances[i-1]['amount']
+            daily_changes.append({
+                'date': balances[i]['date'],
+                'change': change
+            })
+        
+        if daily_changes:
+            best_day = max(daily_changes, key=lambda x: x['change'])
+            worst_day = min(daily_changes, key=lambda x: x['change'])
+        else:
+            best_day = worst_day = None
+        
+        return {
+            'weekly_growth': round(weekly_growth, 2),
+            'best_day': best_day,
+            'worst_day': worst_day
+        }
